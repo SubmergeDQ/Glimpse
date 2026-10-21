@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>Glimpse</RootNamespace>
+    <AssemblyName>Glimpse</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- 主副屏分辨率与缩放常不一致，必须按显示器各自 DPI 处理 -->
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Glimpse.Abstractions\Glimpse.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 采集与呈现所需的 GPU 绑定 -->
+    <PackageReference Include="Vortice.Direct3D11" />
+    <PackageReference Include="Vortice.DXGI" />
+    <PackageReference Include="Vortice.DirectComposition" />
+  </ItemGroup>
+
+</Project>

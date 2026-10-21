@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Glimpse.Abstractions</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      契约层需要暴露 ID3D11Texture2D 与像素格式，因此必须依赖 GPU 绑定。
+      除此之外不得引入任何 UI、窗口或采集实现相关依赖。
+    -->
+    <PackageReference Include="Vortice.Direct3D11" />
+    <PackageReference Include="Vortice.DXGI" />
+  </ItemGroup>
+
+</Project>
