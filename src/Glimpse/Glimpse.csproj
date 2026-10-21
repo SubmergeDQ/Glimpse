@@ -19,6 +19,13 @@
     <PackageReference Include="Vortice.Direct3D11" />
     <PackageReference Include="Vortice.DXGI" />
     <PackageReference Include="Vortice.DirectComposition" />
+    <!-- 运行时编译全屏三角形着色器，避免把预编译字节码塞进仓库 -->
+    <PackageReference Include="Vortice.D3DCompiler" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 纯函数测试需要访问内部实现，测试工程本身仍不触碰 GPU -->
+    <InternalsVisibleTo Include="Glimpse.Tests" />
   </ItemGroup>
 
 </Project>

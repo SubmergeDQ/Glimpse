@@ -3,7 +3,6 @@
   <PropertyGroup>
     <RootNamespace>Glimpse.Tests</RootNamespace>
     <IsPackable>false</IsPackable>
-    <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,8 +15,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- 测试只依赖契约层，避免被 UI 与 GPU 实现拖进依赖 -->
-    <ProjectReference Include="..\..\src\Glimpse.Abstractions\Glimpse.Abstractions.csproj" />
+    <!-- 只引用主工程以测试纯函数（视口计算、分位数），测试过程不初始化 GPU 与窗口 -->
+    <ProjectReference Include="..\..\src\Glimpse\Glimpse.csproj" />
   </ItemGroup>
 
 </Project>

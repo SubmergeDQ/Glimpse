@@ -34,6 +34,7 @@ Glimpse/
 │       ├── Capture/            WGC 采集实现
 │       ├── Configuration/      设置读写
 │       ├── Diagnostics/        时钟、帧率与延迟统计
+│       ├── Display/            显示器枚举适配
 │       ├── Interop/            P/Invoke、COM 接口、原生结构体
 │       ├── Platform/           托盘、全局热键、窗口捕获排除
 │       ├── Render/             D3D11 呈现与 DirectComposition
@@ -52,6 +53,7 @@ Glimpse/
 | `Interop/` | `DllImport`、`ComImport` 接口、与原生结构体一一对应的 struct | 业务逻辑、状态机、错误提示文案 |
 | `Capture/` | `IFrameSource` 的实现、捕获会话生命周期 | 窗口、绘制、设置读写 |
 | `Render/` | `IPreviewHost` 的实现、交换链与合成器 | 采集逻辑、显示器枚举 |
+| `Display/` | `IMonitorEnumerator` 的 Win32 实现 | 画面处理、窗口 |
 | `Ui/` | 窗口消息处理、鼠标键盘交互、排版 | 直接调用 `DllImport`、直接 `new` 采集或渲染对象 |
 | `Platform/` | 托盘、热键注册、`SetWindowDisplayAffinity` 等系统集成 | 画面处理 |
 | `Diagnostics/` | 时钟、帧率、延迟统计与输出 | 业务决策 |
@@ -63,15 +65,18 @@ Glimpse/
 允许的引用（箭头表示"可以引用"）：
 
 ```
-App → Ui / Capture / Render / Platform / Configuration / Diagnostics
+App → Ui / Capture / Render / Platform / Configuration / Diagnostics / Display / Interop
 Ui  → Abstractions
-Capture → Abstractions / Interop
-Render  → Abstractions / Interop
+Capture → Abstractions / Interop / Diagnostics
+Render  → Abstractions / Interop / Diagnostics
+Display → Abstractions / Interop
 Platform → Interop
 Configuration → Abstractions
-Diagnostics → Abstractions
+Diagnostics → Abstractions / Interop
 Abstractions → （仅 Vortice 的纹理与格式类型）
 ```
+
+`Diagnostics` 是横切关注点：`Capture` / `Render` 可以向它报告帧计数与延迟，但 `Diagnostics` 不得反向依赖两者。`App` 作为组合根，可以直接调用 `Interop` 完成设备与窗口装配。
 
 三条硬性禁令：
 
@@ -92,7 +97,7 @@ Abstractions → （仅 Vortice 的纹理与格式类型）
 
 ## 构建与验证
 
-需要 .NET 8 SDK（当前开发机只有运行时，尚未安装）。
+需要 .NET 8 SDK（本机已安装 8.0.426）。
 
 ```powershell
 dotnet build Glimpse.sln -c Debug

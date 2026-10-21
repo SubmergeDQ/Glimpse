@@ -16,5 +16,8 @@ public interface IPreviewHost : IDisposable
     /// <summary>呈现一帧。实现不得阻塞采集线程，未消费的帧应被丢弃而不是排队。</summary>
     void Present(in CapturedFrame frame);
 
+    /// <summary>窗口客户区尺寸变化时调用，内部走交换链 ResizeBuffers 而不是重建整条链路。</summary>
+    void Resize(int width, int height);
+
     void Show();
 }
