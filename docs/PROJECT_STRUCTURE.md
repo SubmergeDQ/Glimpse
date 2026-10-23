@@ -66,7 +66,7 @@ Glimpse/
 
 ```
 App → Ui / Capture / Render / Platform / Configuration / Diagnostics / Display / Interop
-Ui  → Abstractions
+Ui  → Abstractions / Diagnostics / Platform
 Capture → Abstractions / Interop / Diagnostics
 Render  → Abstractions / Interop / Diagnostics
 Display → Abstractions / Interop
@@ -76,7 +76,7 @@ Diagnostics → Abstractions / Interop
 Abstractions → （仅 Vortice 的纹理与格式类型）
 ```
 
-`Diagnostics` 是横切关注点：`Capture` / `Render` 可以向它报告帧计数与延迟，但 `Diagnostics` 不得反向依赖两者。`App` 作为组合根，可以直接调用 `Interop` 完成设备与窗口装配。
+`Diagnostics` 是横切关注点：`Capture` / `Render` 可以向它报告帧计数与延迟，但 `Diagnostics` 不得反向依赖两者。`App` 作为组合根，可以直接调用 `Interop` 完成设备与窗口装配。`Ui` 可以消费 `Diagnostics` 的读数，也允许通过 `Platform` 的窗口几何/DPI 包装做物理像素定位；但原生调用仍必须留在 `Platform`，`Ui` 不得直接 `DllImport`。
 
 三条硬性禁令：
 

@@ -1,5 +1,6 @@
 using System.Drawing.Text;
 using Glimpse.Diagnostics;
+using Glimpse.Platform;
 
 namespace Glimpse.Ui;
 
@@ -14,6 +15,18 @@ internal sealed class StatsOverlayWindow : Form
     private const long WsExNoActivate = 0x08000000;
     private const long WsExTransparent = 0x00000020;
 
+    private const int WmDpiChanged = 0x02E0;
+
+    // 界面常量按 96 DPI 的逻辑像素书写，使用前经 DpiScaling 换算
+    private const int LogicalWidth = 154;
+    private const int LogicalHeight = 48;
+    private const int LogicalFontPixels = 13;
+    private const int LogicalPadding = 8;
+    private const int LogicalValueLeft = 52;
+    private const int LogicalFirstRow = 5;
+    private const int LogicalSecondRow = 25;
+    private const int LogicalStuckRow = 15;
+
     private static readonly Color NormalColor = Color.FromArgb(69, 214, 160);
     private static readonly Color WarnColor = Color.FromArgb(242, 169, 59);
     private static readonly Color ErrorColor = Color.FromArgb(239, 91, 91);
@@ -21,9 +34,10 @@ internal sealed class StatsOverlayWindow : Form
 
     private readonly LiveStatsChannel _channel;
     private readonly System.Windows.Forms.Timer _timer;
-    private readonly Font _font = new("Consolas", 13, FontStyle.Bold, GraphicsUnit.Pixel);
 
+    private Font _font = CreateFont(DpiScaling.DefaultDpi);
     private LiveStats _stats;
+    private int _dpi = DpiScaling.DefaultDpi;
 
     public StatsOverlayWindow(LiveStatsChannel channel)
     {
@@ -36,7 +50,9 @@ internal sealed class StatsOverlayWindow : Form
         AutoScaleMode = AutoScaleMode.None;
         BackColor = Color.FromArgb(8, 9, 11);
         Opacity = 0.82;
-        Size = new Size(154, 48);
+        Size = new Size(
+            DpiScaling.Scale(LogicalWidth, _dpi),
+            DpiScaling.Scale(LogicalHeight, _dpi));
 
         _timer = new System.Windows.Forms.Timer { Interval = 1000 };
         _timer.Tick += (_, _) => RefreshStats();
@@ -56,6 +72,47 @@ internal sealed class StatsOverlayWindow : Form
         }
     }
 
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        _dpi = WindowPlacement.GetDpi(Handle);
+        ApplyDpiLayout();
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == WmDpiChanged)
+        {
+            // 读数框尺寸由固定逻辑尺寸决定，不跟随建议矩形（避免在不同屏之间越拖越偏）
+            int newDpi = m.WParam.ToInt32() & 0xFFFF;
+            if (newDpi > 0)
+            {
+                _dpi = newDpi;
+                ApplyDpiLayout();
+            }
+
+            m.Result = IntPtr.Zero;
+            return;
+        }
+
+        base.WndProc(ref m);
+    }
+
+    private static Font CreateFont(int dpi) =>
+        new("Consolas", DpiScaling.Scale(LogicalFontPixels, dpi), FontStyle.Bold, GraphicsUnit.Pixel);
+
+    private void ApplyDpiLayout()
+    {
+        Font previous = _font;
+        _font = CreateFont(_dpi);
+        previous.Dispose();
+
+        Size = new Size(
+            DpiScaling.Scale(LogicalWidth, _dpi),
+            DpiScaling.Scale(LogicalHeight, _dpi));
+        Invalidate();
+    }
+
     public void RefreshNow() => RefreshStats();
 
     private void RefreshStats()
@@ -71,6 +128,12 @@ internal sealed class StatsOverlayWindow : Form
 
         e.Graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
+        int padding = DpiScaling.Scale(LogicalPadding, _dpi);
+        int valueLeft = DpiScaling.Scale(LogicalValueLeft, _dpi);
+        int firstRow = DpiScaling.Scale(LogicalFirstRow, _dpi);
+        int secondRow = DpiScaling.Scale(LogicalSecondRow, _dpi);
+        int stuckRow = DpiScaling.Scale(LogicalStuckRow, _dpi);
+
         using var labelBrush = new SolidBrush(LabelColor);
         using var valueBrush = new SolidBrush(
             noFrames
@@ -85,15 +148,15 @@ internal sealed class StatsOverlayWindow : Form
                 ? $"no frame {(DateTime.Now - last).TotalSeconds:0}s"
                 : "no frame";
 
-            e.Graphics.DrawString(stuck, _font, valueBrush, 8, 15);
+            e.Graphics.DrawString(stuck, _font, valueBrush, padding, stuckRow);
             return;
         }
 
-        e.Graphics.DrawString("show", _font, labelBrush, 8, 5);
-        e.Graphics.DrawString($"{_stats.ShowFps,3:0} fps", _font, valueBrush, 52, 5);
+        e.Graphics.DrawString("show", _font, labelBrush, padding, firstRow);
+        e.Graphics.DrawString($"{_stats.ShowFps,3:0} fps", _font, valueBrush, valueLeft, firstRow);
 
-        e.Graphics.DrawString("p95", _font, labelBrush, 8, 25);
-        e.Graphics.DrawString($"{_stats.PresentP95,4:0.0} ms", _font, valueBrush, 52, 25);
+        e.Graphics.DrawString("p95", _font, labelBrush, padding, secondRow);
+        e.Graphics.DrawString($"{_stats.PresentP95,4:0.0} ms", _font, valueBrush, valueLeft, secondRow);
     }
 
     protected override void Dispose(bool disposing)

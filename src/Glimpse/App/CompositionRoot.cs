@@ -169,11 +169,14 @@ internal static class CompositionRoot
             void PositionOverlay()
             {
                 (int previewX, int previewY, _, _) = WindowPlacement.GetBounds(previewWindow.Handle);
+
+                // 边距按读数框所在屏的 DPI 换算，避免高缩放屏上贴得过紧
+                int margin = DpiScaling.Scale(8, WindowPlacement.GetDpi(statsOverlay.Handle));
                 Size overlaySize = statsOverlay.ClientSize;
                 WindowPlacement.Place(
                     statsOverlay.Handle,
-                    previewX + 8,
-                    previewY + 8,
+                    previewX + margin,
+                    previewY + margin,
                     overlaySize.Width,
                     overlaySize.Height);
             }
@@ -218,9 +221,11 @@ internal static class CompositionRoot
                 }
             }
 
-            // 读数跟随预览窗移动与缩放，永远贴在客户区左上角
+            // 读数跟随预览窗移动与缩放，永远贴在客户区左上角；
+            // 跨屏 DPI 变化时读数框自身尺寸会变，也要重新贴边
             previewWindow.LocationChanged += (_, _) => PositionOverlay();
             previewWindow.ClientSizeChanged += (_, _) => PositionOverlay();
+            statsOverlay.SizeChanged += (_, _) => PositionOverlay();
 
             if (overlayEnabled)
             {

@@ -69,6 +69,9 @@ internal static class WindowInterop
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
 
+    [DllImport("user32.dll", EntryPoint = "GetDpiForWindow")]
+    private static extern uint GetDpiForWindow(IntPtr hwnd);
+
     [DllImport("user32.dll", EntryPoint = "DestroyIcon", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool DestroyIcon(IntPtr hIcon);
@@ -140,5 +143,12 @@ internal static class WindowInterop
         }
 
         return (rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
+    }
+
+    /// <summary>窗口所在显示器的有效 DPI，96 表示 100%。句柄无效时按 96 处理。</summary>
+    public static int GetDpi(IntPtr hwnd)
+    {
+        uint dpi = GetDpiForWindow(hwnd);
+        return dpi == 0 ? 96 : (int)dpi;
     }
 }
