@@ -14,8 +14,8 @@
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
 
-    <!-- 版本号集中管理：0.0.2 对应 M1 GPU 直通 -->
-    <Version>0.0.2</Version>
+    <!-- 版本号集中管理：0.0.2 对应 M1 GPU 直通，0.0.3 对应 M2 交互集成与性能观测 -->
+    <Version>0.0.3</Version>
 
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
