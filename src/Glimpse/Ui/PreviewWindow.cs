@@ -17,7 +17,6 @@ internal sealed class PreviewWindow : Form
 
     private const int WmNcHitTest = 0x0084;
     private const int WmSizing = 0x0214;
-    private const int HtTransparent = -1;
     private const int HtCaption = 2;
     private const int HtLeft = 10;
     private const int HtRight = 11;
@@ -158,12 +157,8 @@ internal sealed class PreviewWindow : Form
 
     private IntPtr HitTest(IntPtr screenPoint)
     {
-        if (_host?.IsClickThrough == true)
-        {
-            return new IntPtr(HtTransparent);
-        }
-
-        // lParam 的低 16 位是屏幕 X，高 16 位是屏幕 Y（带符号）
+        // 穿透状态完全交给 WS_EX_TRANSPARENT：HTTRANSPARENT 只对同线程窗口有效，
+        // 下层窗口属于其他进程时返回它会把点击丢掉，反而使穿透失效
         int screenX = unchecked((short)(long)screenPoint);
         int screenY = unchecked((short)((long)screenPoint >> 16));
         Point point = PointToClient(new Point(screenX, screenY));

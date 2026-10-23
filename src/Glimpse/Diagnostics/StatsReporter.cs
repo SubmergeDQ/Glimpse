@@ -10,17 +10,20 @@ internal sealed class StatsReporter
     private readonly LatencyMonitor _captureLatency;
     private readonly LatencyMonitor _presentLatency;
     private readonly DiagnosticsLog _log;
+    private readonly LiveStatsChannel? _liveStats;
 
     public StatsReporter(
         FrameStats stats,
         LatencyMonitor captureLatency,
         LatencyMonitor presentLatency,
-        DiagnosticsLog log)
+        DiagnosticsLog log,
+        LiveStatsChannel? liveStats = null)
     {
         _stats = stats;
         _captureLatency = captureLatency;
         _presentLatency = presentLatency;
         _log = log;
+        _liveStats = liveStats;
     }
 
     public void Report()
@@ -28,6 +31,8 @@ internal sealed class StatsReporter
         FrameStatsSnapshot frames = _stats.TakeWindow();
         LatencySnapshot capture = _captureLatency.TakeSnapshot();
         LatencySnapshot present = _presentLatency.TakeSnapshot();
+
+        _liveStats?.Publish(frames.Presented, present.P95, frames.Presented > 0);
 
         _log.WriteLine(
             $"{DateTime.Now:HH:mm:ss} " +

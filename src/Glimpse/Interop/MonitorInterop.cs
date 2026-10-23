@@ -20,13 +20,17 @@ internal static class MonitorInterop
         public int Bottom;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct MonitorInfo
     {
         public int Size;
         public NativeRect Monitor;
         public NativeRect Work;
         public uint Flags;
+
+        // MONITORINFOEXW 的 szDevice，固定 32 个宽字符
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string DeviceName;
     }
 
     private delegate bool MonitorEnumProc(IntPtr monitor, IntPtr dc, ref NativeRect rect, IntPtr data);
@@ -46,7 +50,14 @@ internal static class MonitorInterop
     /// <summary>枚举全部显示器，按 X 再按 Y 排序后赋予稳定序号。</summary>
     public static List<MonitorDescriptor> Enumerate()
     {
-        var raw = new List<(IntPtr Handle, bool IsPrimary, int X, int Y, int Width, int Height)>();
+        var raw = new List<(
+            IntPtr Handle,
+            bool IsPrimary,
+            int X,
+            int Y,
+            int Width,
+            int Height,
+            string DeviceName)>();
 
         EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr hMonitor, IntPtr _, ref NativeRect _, IntPtr _) =>
         {
@@ -62,7 +73,8 @@ internal static class MonitorInterop
                 info.Monitor.Left,
                 info.Monitor.Top,
                 info.Monitor.Right - info.Monitor.Left,
-                info.Monitor.Bottom - info.Monitor.Top));
+                info.Monitor.Bottom - info.Monitor.Top,
+                info.DeviceName ?? string.Empty));
 
             return true;
         }, IntPtr.Zero);
@@ -78,7 +90,8 @@ internal static class MonitorInterop
                 item.X,
                 item.Y,
                 item.Width,
-                item.Height))
+                item.Height,
+                item.DeviceName))
             .ToList();
     }
 }

@@ -1,5 +1,7 @@
+using Glimpse.Abstractions.Configuration;
 using Glimpse.Abstractions.Display;
 using Glimpse.Capture;
+using Glimpse.Configuration;
 using Glimpse.Diagnostics;
 using Glimpse.Display;
 using Glimpse.Interop;
@@ -15,9 +17,7 @@ namespace Glimpse.App;
 /// </summary>
 internal static class CompositionRoot
 {
-    private const int HotKeyToggleClickThrough = 1;
     private const int HotKeyExit = 2;
-    private const uint VirtualKeyP = 0x50;
     private const uint VirtualKeyQ = 0x51;
 
     public static void Run(string[] args)
@@ -25,11 +25,8 @@ internal static class CompositionRoot
         using SingleInstance instance = SingleInstance.Acquire();
         if (!instance.IsOwner)
         {
-            MessageBox.Show(
-                "Glimpse 已在运行。",
-                "Glimpse",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            // 不弹窗、不新起进程：请已有实例显示并置前预览窗
+            SingleInstance.RequestActivation();
             return;
         }
 
@@ -38,7 +35,7 @@ internal static class CompositionRoot
         using var log = new DiagnosticsLog();
         try
         {
-            RunCore(log, StartupOptions.Parse(args));
+            RunCore(log, StartupOptions.Parse(args), instance);
         }
         catch (Exception ex)
         {
@@ -51,9 +48,23 @@ internal static class CompositionRoot
         }
     }
 
-    private static void RunCore(DiagnosticsLog log, StartupOptions options)
+    private static void RunCore(DiagnosticsLog log, StartupOptions options, SingleInstance instance)
     {
-        log.WriteLine($"Glimpse 0.0.2 启动（{DateTime.Now:yyyy-MM-dd HH:mm:ss}），日志：{log.LogFilePath}");
+        string version = typeof(CompositionRoot).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+        log.WriteLine($"Glimpse {version} 启动（{DateTime.Now:yyyy-MM-dd HH:mm:ss}），日志：{log.LogFilePath}");
+
+        SettingsStore settingsStore = SettingsStore.CreateDefault();
+        AppSettings settings = settingsStore.Load(out string? settingsWarning);
+        if (settingsWarning is not null)
+        {
+            log.WriteLine($"[设置] {settingsWarning}");
+        }
+        else if (settings.Placement is { } savedPlacement)
+        {
+            log.WriteLine(
+                $"[设置] 已读取保存位置 ({savedPlacement.X},{savedPlacement.Y}) " +
+                $"{savedPlacement.Width}x{savedPlacement.Height}");
+        }
 
         var clock = new FrameClock();
         var monitors = new MonitorEnumerator().Enumerate();
@@ -66,10 +77,10 @@ internal static class CompositionRoot
         {
             log.WriteLine(
                 $"[显示器] #{monitor.Index} {(monitor.IsPrimary ? "主屏" : "副屏")} " +
-                $"{monitor.Width}x{monitor.Height} @ ({monitor.X},{monitor.Y})");
+                $"{monitor.Width}x{monitor.Height} @ ({monitor.X},{monitor.Y}) {monitor.DeviceName}");
         }
 
-        MonitorSelection selection = options.Resolve(monitors, out string? selectionWarning);
+        MonitorSelection selection = options.Resolve(monitors, settings, out string? selectionWarning);
         if (selectionWarning is not null)
         {
             log.WriteLine($"[启动] {selectionWarning}");
@@ -99,36 +110,307 @@ internal static class CompositionRoot
         var stats = new FrameStats();
         var captureLatency = new LatencyMonitor();
         var presentLatency = new LatencyMonitor();
-        var reporter = new StatsReporter(stats, captureLatency, presentLatency, log);
+        var liveStats = new LiveStatsChannel();
+        var reporter = new StatsReporter(stats, captureLatency, presentLatency, log, liveStats);
+        var benchmark = new BenchmarkRunner(stats, captureLatency, presentLatency);
 
-        WgcFrameSource? source = null;
+        CaptureSession? session = null;
         PreviewWindow? window = null;
+        StatsOverlayWindow? overlay = null;
         D3DPreviewHost? host = null;
         RenderLoop? loop = null;
-        GlobalHotKey? clickThroughHotKey = null;
         GlobalHotKey? exitHotKey = null;
+        TrayIconHost? tray = null;
+        bool exiting = false;
 
         try
         {
-            source = new WgcFrameSource(gpu, sourceMonitor, clock, stats, captureLatency, log);
+            session = new CaptureSession(gpu, sourceMonitor, clock, stats, captureLatency, log);
+            WgcFrameSource source = session.Source;
 
             window = new PreviewWindow();
-            window.SetSourceSize(source.FrameSize.Width, source.FrameSize.Height);
+            PreviewWindow previewWindow = window;
+            previewWindow.SetSourceSize(source.FrameSize.Width, source.FrameSize.Height);
 
             // 先让 WinForms 完成首次布局，再按物理像素覆盖位置与尺寸，
             // 避免 Show 时的默认布局覆盖 SetWindowPos 的结果。
-            window.Show();
+            previewWindow.Show();
 
-            IntPtr windowHandle = window.Handle;
-            (int x, int y, int width, int height) = PreviewLayout.Compute(
+            IntPtr windowHandle = previewWindow.Handle;
+            (int x, int y, int width, int height) = ResolvePreviewBounds(
+                settings,
                 previewMonitor,
-                source.FrameSize.Width,
-                source.FrameSize.Height);
+                source.FrameSize,
+                monitors);
             WindowPlacement.Place(windowHandle, x, y, width, height);
+            log.WriteLine($"[窗口] 位置 ({x},{y}) {width}x{height}");
 
             (int clientWidth, int clientHeight) = WindowPlacement.GetClientSize(windowHandle);
             host = new D3DPreviewHost(gpu, windowHandle, clientWidth, clientHeight, stats, log);
-            window.AttachHost(host);
+            previewWindow.AttachHost(host);
+
+            if (settings.ClickThrough)
+            {
+                log.WriteLine("[窗口] 忽略已保存的点击穿透：当前呈现方式不支持穿透");
+            }
+
+            D3DPreviewHost previewHost = host;
+
+            overlay = new StatsOverlayWindow(liveStats);
+            StatsOverlayWindow statsOverlay = overlay;
+            statsOverlay.Owner = previewWindow;
+            bool overlayEnabled = settings.ShowLatencyOverlay;
+
+            void PositionOverlay()
+            {
+                (int previewX, int previewY, _, _) = WindowPlacement.GetBounds(previewWindow.Handle);
+                Size overlaySize = statsOverlay.ClientSize;
+                WindowPlacement.Place(
+                    statsOverlay.Handle,
+                    previewX + 8,
+                    previewY + 8,
+                    overlaySize.Width,
+                    overlaySize.Height);
+            }
+
+            void ShowOverlay()
+            {
+                statsOverlay.Show();
+                PositionOverlay();
+                WindowCaptureExclusion.Apply(statsOverlay.Handle);
+            }
+
+            void SetPreviewVisible(bool visible)
+            {
+                if (visible)
+                {
+                    previewWindow.Show();
+                    if (overlayEnabled)
+                    {
+                        ShowOverlay();
+                    }
+                }
+                else
+                {
+                    previewWindow.Hide();
+                    statsOverlay.Hide();
+                }
+            }
+
+            void TogglePreview() => SetPreviewVisible(!previewWindow.Visible);
+
+            void ToggleOverlay()
+            {
+                overlayEnabled = !overlayEnabled;
+
+                if (overlayEnabled && previewWindow.Visible)
+                {
+                    ShowOverlay();
+                }
+                else
+                {
+                    statsOverlay.Hide();
+                }
+            }
+
+            // 读数跟随预览窗移动与缩放，永远贴在客户区左上角
+            previewWindow.LocationChanged += (_, _) => PositionOverlay();
+            previewWindow.ClientSizeChanged += (_, _) => PositionOverlay();
+
+            if (overlayEnabled)
+            {
+                ShowOverlay();
+            }
+
+            void ToggleClickThrough()
+            {
+                bool enabled = !previewHost.IsClickThrough;
+                previewHost.IsClickThrough = enabled;
+                tray?.SetClickThrough(enabled);
+            }
+
+            void RequestExit()
+            {
+                DialogResult confirm = MessageBox.Show(
+                    "退出后舞台会立刻失去预览，确定退出？",
+                    "Glimpse",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2);
+
+                if (confirm != DialogResult.Yes)
+                {
+                    return;
+                }
+
+                exiting = true;
+                previewWindow.Close();
+            }
+
+            instance.ListenForActivation(() =>
+            {
+                if (previewWindow.IsDisposed)
+                {
+                    return;
+                }
+
+                // 事件在后台线程触发，切回 UI 线程再操作窗口
+                previewWindow.BeginInvoke(() =>
+                {
+                    SetPreviewVisible(true);
+                    WindowPlacement.BringToFront(previewWindow.Handle);
+                    log.WriteLine("[单实例] 已响应第二个实例的激活请求");
+                });
+            });
+
+            previewWindow.FormClosing += (_, e) =>
+            {
+                SaveSettings(
+                    settingsStore,
+                    settings,
+                    previewWindow,
+                    sourceMonitor,
+                    previewMonitor,
+                    previewHost,
+                    overlayEnabled,
+                    log);
+
+                // 关闭窗口只收进托盘，捕获与呈现继续运行；托盘「退出」才真正结束进程
+                if (!exiting)
+                {
+                    e.Cancel = true;
+                    previewWindow.Hide();
+                }
+            };
+
+            string logDirectory = Path.GetDirectoryName(log.LogFilePath) ?? string.Empty;
+
+            async void RunBenchmark(TimeSpan duration, bool silent)
+            {
+                if (benchmark.IsRunning)
+                {
+                    return;
+                }
+
+                try
+                {
+                    tray?.SetBenchmarkEnabled(false);
+                    log.WriteLine($"[基准] 开始 {duration.TotalSeconds:0} 秒基准测试");
+
+                    BenchmarkResult result = await benchmark.RunAsync(duration);
+                    string path = BenchmarkReport.Write(result, logDirectory);
+
+                    log.WriteLine(
+                        $"[基准] 捕获 {result.CaptureFps:F1} fps，呈现 {result.PresentFps:F1} fps，" +
+                        $"丢弃 {result.Dropped}，present p95 {result.Present.P95:F1} ms，" +
+                        $"CPU {result.CpuPercentSingleCore:F1}% 单核，报告：{path}");
+
+                    if (silent)
+                    {
+                        exiting = true;
+                        previewWindow.Close();
+                        return;
+                    }
+
+                    MessageBox.Show(
+                        $"基准测试完成\n\n" +
+                        $"捕获 {result.CaptureFps:F1} fps / 呈现 {result.PresentFps:F1} fps\n" +
+                        $"端到端 p95 {result.Present.P95:F1} ms\n" +
+                        $"CPU {result.CpuPercentSingleCore:F1}% 单核\n\n" +
+                        $"报告：{path}",
+                        "Glimpse",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                }
+                catch (Exception ex)
+                {
+                    log.WriteLine($"[基准] 失败：{ex}");
+
+                    if (silent)
+                    {
+                        exiting = true;
+                        previewWindow.Close();
+                    }
+                }
+                finally
+                {
+                    tray?.SetBenchmarkEnabled(true);
+                }
+            }
+
+            loop = new RenderLoop(
+                session.Source,
+                host,
+                clock,
+                presentLatency,
+                reporter,
+                log,
+                () => !host.IsFaulted);
+
+            CaptureSession activeSession = session;
+            RenderLoop activeLoop = loop;
+
+            void SwitchSource(MonitorDescriptor monitor)
+            {
+                if (!activeSession.TrySwitch(monitor, out string? switchError))
+                {
+                    if (switchError is not null)
+                    {
+                        log.WriteLine($"[切换] 失败，保留原会话：{switchError}");
+                        MessageBox.Show(
+                            $"切换到显示器 #{monitor.Index} 失败：{switchError}",
+                            "Glimpse",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                    }
+
+                    return;
+                }
+
+                // 先让渲染线程取新源，再调整窗口；旧源由 CaptureSession 延迟释放
+                activeLoop.SwitchSource(activeSession.Source);
+
+                // 退出时保存的是最后使用的捕获源
+                sourceMonitor = monitor;
+
+                (int sourceWidth, int sourceHeight) = activeSession.Source.FrameSize;
+                previewWindow.SetSourceSize(sourceWidth, sourceHeight);
+
+                (int currentX, int currentY, int currentWidth, int currentHeight) =
+                    WindowPlacement.GetBounds(previewWindow.Handle);
+                (int nextX, int nextY, int nextWidth, int nextHeight) = PreviewLayout.FitToMonitor(
+                    currentX,
+                    currentY,
+                    currentWidth,
+                    currentHeight,
+                    sourceWidth,
+                    sourceHeight,
+                    previewMonitor);
+                WindowPlacement.Place(previewWindow.Handle, nextX, nextY, nextWidth, nextHeight);
+
+                tray?.SetStatusText($"捕获 #{monitor.Index} · 预览 #{previewMonitor.Index}");
+                log.WriteLine($"[切换] 已切换到显示器 #{monitor.Index}，窗口 {nextWidth}x{nextHeight}");
+            }
+
+            tray = new TrayIconHost(
+                logDirectory,
+                $"捕获 #{sourceMonitor.Index} · 预览 #{previewMonitor.Index}",
+                ToggleClickThrough,
+                () => previewWindow.Visible,
+                () => overlayEnabled,
+                TogglePreview,
+                ToggleOverlay,
+                RequestExit,
+                () => RunBenchmark(TimeSpan.FromSeconds(60), silent: false),
+                () => monitors
+                    .Select(monitor => new TrayMonitorItem(
+                        $"#{monitor.Index} {(monitor.IsPrimary ? "主屏" : "副屏")} {monitor.Width}x{monitor.Height}",
+                        monitor.Index == activeSession.Monitor.Index,
+                        () => SwitchSource(monitor)))
+                    .ToList(),
+                clickThroughAvailable: false);
+
+            log.WriteLine("[托盘] 已创建，关闭窗口将收进托盘");
 
             if (WindowCaptureExclusion.Apply(windowHandle))
             {
@@ -139,70 +421,112 @@ internal static class CompositionRoot
                 log.WriteLine("[窗口] 警告：系统不支持 WDA_EXCLUDEFROMCAPTURE，预览窗可能被拍进画面");
             }
 
-            clickThroughHotKey = TryCreateHotKey(
-                HotKeyToggleClickThrough,
-                GlobalHotKey.ControlAlt,
-                VirtualKeyP,
-                "Ctrl+Alt+P 切换点击穿透",
-                () => host.IsClickThrough = !host.IsClickThrough,
-                log)
-                ?? TryCreateHotKey(
-                    HotKeyToggleClickThrough,
-                    GlobalHotKey.ControlShift,
-                    VirtualKeyP,
-                    "Ctrl+Shift+P 切换点击穿透（备选）",
-                    () => host.IsClickThrough = !host.IsClickThrough,
-                    log);
-
             exitHotKey = TryCreateHotKey(
                 HotKeyExit,
                 GlobalHotKey.ControlAlt,
                 VirtualKeyQ,
                 "Ctrl+Alt+Q 退出",
-                () => window.Close(),
+                RequestExit,
                 log)
                 ?? TryCreateHotKey(
                     HotKeyExit,
                     GlobalHotKey.ControlShift,
                     VirtualKeyQ,
                     "Ctrl+Shift+Q 退出（备选）",
-                    () => window.Close(),
+                    RequestExit,
                     log);
-
-            loop = new RenderLoop(
-                source,
-                host,
-                clock,
-                presentLatency,
-                reporter,
-                log,
-                () => !host.IsFaulted);
 
             try
             {
-                source.StartCapture();
-                loop.Start();
+                session.Source.StartCapture();
+                activeLoop.Start();
             }
             catch (Exception ex)
             {
                 log.WriteLine($"[启动] 采集启动失败：{ex}");
-                window.Close();
+                exiting = true;
+                previewWindow.Close();
             }
 
-            Application.Run(window);
+            if (options.BenchmarkSeconds is int benchmarkSeconds && benchmarkSeconds > 0)
+            {
+                // 无人值守测试：跑完写报告并退出，不弹窗
+                RunBenchmark(TimeSpan.FromSeconds(benchmarkSeconds), silent: true);
+            }
+
+            Application.Run(previewWindow);
         }
         finally
         {
-            // 关闭顺序必须与创建相反：先停渲染，再停采集，最后释放呈现与设备
+            // 关闭顺序必须与创建相反：先移除托盘，再停渲染，最后停采集与呈现
+            tray?.Dispose();
             loop?.Dispose();
-            source?.Dispose();
+            session?.Dispose();
+            overlay?.Dispose();
             host?.Dispose();
-            clickThroughHotKey?.Dispose();
             exitHotKey?.Dispose();
         }
 
         reporter.ReportFinal();
         log.WriteLine("Glimpse 已退出");
+    }
+
+    /// <summary>
+    /// 恢复保存的预览窗位置；位置失效或首次启动时按源画面比例重新推导。
+    /// 恢复时按当前源比例修正尺寸，避免源分辨率变化后出现黑边。
+    /// </summary>
+    private static (int X, int Y, int Width, int Height) ResolvePreviewBounds(
+        AppSettings settings,
+        MonitorDescriptor previewMonitor,
+        (int Width, int Height) sourceSize,
+        IReadOnlyList<MonitorDescriptor> monitors)
+    {
+        if (settings.Placement is { } saved && PreviewLayout.IsUsable(saved, monitors))
+        {
+            (int width, int height) = PreviewLayout.FitToAspect(
+                saved.Width,
+                saved.Height,
+                sourceSize.Width,
+                sourceSize.Height);
+
+            return (saved.X, saved.Y, width, height);
+        }
+
+        return PreviewLayout.Compute(previewMonitor, sourceSize.Width, sourceSize.Height);
+    }
+
+    private static void SaveSettings(
+        SettingsStore store,
+        AppSettings current,
+        PreviewWindow window,
+        MonitorDescriptor sourceMonitor,
+        MonitorDescriptor previewMonitor,
+        D3DPreviewHost host,
+        bool showOverlay,
+        DiagnosticsLog log)
+    {
+        try
+        {
+            (int x, int y, int width, int height) = WindowPlacement.GetBounds(window.Handle);
+            AppSettings updated = current with
+            {
+                SourceDeviceName = sourceMonitor.DeviceName,
+                PreviewDeviceName = previewMonitor.DeviceName,
+                SourceMonitorIndex = sourceMonitor.Index,
+                PreviewMonitorIndex = previewMonitor.Index,
+                Placement = new PreviewPlacement(x, y, width, height),
+                ClickThrough = host.IsClickThrough,
+                ShowLatencyOverlay = showOverlay,
+            };
+
+            store.Save(updated);
+            log.WriteLine($"[设置] 已保存：{store.FilePath}");
+        }
+        catch (Exception ex)
+        {
+            // 保存失败不能影响退出路径
+            log.WriteLine($"[设置] 保存失败：{ex.Message}");
+        }
     }
 
     private static GlobalHotKey? TryCreateHotKey(

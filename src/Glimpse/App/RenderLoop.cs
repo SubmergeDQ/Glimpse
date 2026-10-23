@@ -12,7 +12,8 @@ namespace Glimpse.App;
 /// </summary>
 internal sealed class RenderLoop : IDisposable
 {
-    private readonly IFrameSource _source;
+    // 换屏时由 UI 线程替换；渲染线程每轮重新读取，避免锁住呈现节拍
+    private IFrameSource _source;
     private readonly IPreviewHost _host;
     private readonly IFrameClock _clock;
     private readonly LatencyMonitor _presentLatency;
@@ -58,6 +59,9 @@ internal sealed class RenderLoop : IDisposable
         _thread.Start();
     }
 
+    /// <summary>切换到新的帧源。旧源由调用方在确认不再被引用后释放。</summary>
+    public void SwitchSource(IFrameSource source) => Volatile.Write(ref _source, source);
+
     private void Loop()
     {
         var reportTimer = Stopwatch.StartNew();
@@ -66,7 +70,8 @@ internal sealed class RenderLoop : IDisposable
         {
             try
             {
-                if (_source.TryTakeLatestFrame(out CapturedFrame frame))
+                IFrameSource source = Volatile.Read(ref _source);
+                if (source.TryTakeLatestFrame(out CapturedFrame frame))
                 {
                     _host.Present(frame);
                     _presentLatency.Record(

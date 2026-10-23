@@ -14,13 +14,39 @@ internal sealed class LatencyMonitor
 {
     private readonly object _gate = new();
     private readonly double[] _samples;
+    private readonly List<double> _sessionSamples = new();
     private int _count;
     private int _next;
+    private bool _collectSession;
 
     public LatencyMonitor(int capacity = 600)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(capacity);
         _samples = new double[capacity];
+    }
+
+    /// <summary>开始为基准测试收集全程样本；不影响每秒滑动窗口。</summary>
+    public void BeginSession()
+    {
+        lock (_gate)
+        {
+            _sessionSamples.Clear();
+            _collectSession = true;
+        }
+    }
+
+    /// <summary>结束收集并返回全程分位数，之后恢复正常统计。</summary>
+    public LatencySnapshot EndSession()
+    {
+        double[] session;
+        lock (_gate)
+        {
+            _collectSession = false;
+            session = _sessionSamples.ToArray();
+            _sessionSamples.Clear();
+        }
+
+        return Summarize(session);
     }
 
     public void Record(double milliseconds)
@@ -38,6 +64,11 @@ internal sealed class LatencyMonitor
             if (_count < _samples.Length)
             {
                 _count++;
+            }
+
+            if (_collectSession)
+            {
+                _sessionSamples.Add(milliseconds);
             }
         }
     }

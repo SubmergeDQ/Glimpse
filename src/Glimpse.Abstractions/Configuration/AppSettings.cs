@@ -16,6 +16,12 @@ public sealed record AppSettings
     /// <summary>预览窗所在的显示器序号。</summary>
     public int? PreviewMonitorIndex { get; init; }
 
+    /// <summary>源显示器设备名（如 \\.\DISPLAY2），持久化主键。</summary>
+    public string? SourceDeviceName { get; init; }
+
+    /// <summary>预览显示器设备名，持久化主键。</summary>
+    public string? PreviewDeviceName { get; init; }
+
     /// <summary>上次关闭时的窗口位置。</summary>
     public PreviewPlacement? Placement { get; init; }
 

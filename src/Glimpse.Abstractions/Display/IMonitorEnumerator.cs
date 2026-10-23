@@ -10,6 +10,7 @@ namespace Glimpse.Abstractions.Display;
 /// <param name="Y">虚拟桌面坐标系中的上边界。</param>
 /// <param name="Width">显示器宽度（物理像素）。</param>
 /// <param name="Height">显示器高度（物理像素）。</param>
+/// <param name="DeviceName">系统设备名，如 <c>\\.\DISPLAY2</c>。作为持久化主键，序号仅作兜底。</param>
 public sealed record MonitorDescriptor(
     IntPtr Handle,
     int Index,
@@ -17,7 +18,8 @@ public sealed record MonitorDescriptor(
     int X,
     int Y,
     int Width,
-    int Height);
+    int Height,
+    string DeviceName = "");
 
 /// <summary>显示器枚举。抽象出来便于在无显示器环境下做单元测试。</summary>
 public interface IMonitorEnumerator

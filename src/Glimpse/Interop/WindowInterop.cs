@@ -27,6 +27,7 @@ internal static class WindowInterop
     private const uint SwpNoZOrder = 0x0004;
     private const uint SwpNoActivate = 0x0010;
     private const uint SwpFrameChanged = 0x0020;
+    private const uint SwpShowWindow = 0x0040;
 
     private static readonly IntPtr HwndTopMost = new(-1);
 
@@ -60,9 +61,17 @@ internal static class WindowInterop
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetClientRect(IntPtr hwnd, out NativeRect rect);
 
+    [DllImport("user32.dll", EntryPoint = "GetWindowRect", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr hwnd, out NativeRect rect);
+
     [DllImport("user32.dll", EntryPoint = "SetWindowDisplayAffinity", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
+
+    [DllImport("user32.dll", EntryPoint = "DestroyIcon", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool DestroyIcon(IntPtr hIcon);
 
     [DllImport("user32.dll", EntryPoint = "RegisterHotKey", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -72,7 +81,15 @@ internal static class WindowInterop
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool UnregisterHotKey(IntPtr hwnd, int id);
 
-    /// <summary>切换点击穿透。改完扩展样式必须带 SWP_FRAMECHANGED 才会生效。</summary>
+    /// <summary>把窗口提到最前，不抢焦点。</summary>
+    public static void BringToFront(IntPtr hwnd) =>
+        SetWindowPos(hwnd, HwndTopMost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate | SwpShowWindow);
+
+    /// <summary>
+    /// 切换点击穿透。改完扩展样式必须带 SWP_FRAMECHANGED 才会生效。
+    /// 注意：带 WS_EX_NOREDIRECTIONBITMAP 的合成窗口上此样式不会阻断命中测试，
+    /// 真正的穿透需要改用普通窗口呈现路径，见开发文档风险清单。
+    /// </summary>
     public static void SetClickThrough(IntPtr hwnd, bool enabled)
     {
         long style = GetWindowLongPtr(hwnd, GwlExStyle).ToInt64();
@@ -112,5 +129,16 @@ internal static class WindowInterop
         }
 
         return (rect.Right - rect.Left, rect.Bottom - rect.Top);
+    }
+
+    /// <summary>窗口在虚拟桌面中的位置与尺寸，单位物理像素。</summary>
+    public static (int X, int Y, int Width, int Height) GetWindowBounds(IntPtr hwnd)
+    {
+        if (!GetWindowRect(hwnd, out NativeRect rect))
+        {
+            return (0, 0, 0, 0);
+        }
+
+        return (rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
     }
 }
