@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Glimpse · 托盘、读数与引导</title>
+<link rel="stylesheet" href="panel.css">
+<style>
+  body{background:#060708;overflow-x:hidden}
+  .board{width:1440px;margin:0 auto;padding:40px 56px 64px}
+  .doc-head{display:flex;align-items:flex-end;gap:16px;padding-bottom:18px;border-bottom:1px solid var(--line);margin-bottom:34px}
+  .doc-title{font-size:20px;font-weight:600;letter-spacing:.01em}
+  .doc-sub{font-size:12px;color:var(--fg3)}
+  .doc-head .grow{flex:1}
+  .stamp{font-family:var(--mono);font-size:11px;color:var(--fg3)}
+
+  section.spec{margin-bottom:46px}
+  .spec-cap{display:flex;align-items:baseline;gap:12px;margin-bottom:14px}
+  .spec-no{font-family:var(--mono);font-size:11px;color:var(--amber);letter-spacing:.06em}
+  .spec-name{font-size:14px;font-weight:600}
+  .spec-note{font-size:12px;color:var(--fg3)}
+  .spec-cap .grow{flex:1}
+  .stage{
+    position:relative;background:
+      linear-gradient(0deg,transparent 0 0),
+      repeating-linear-gradient(0deg,var(--line) 0 1px,transparent 1px 40px),
+      repeating-linear-gradient(90deg,var(--line) 0 1px,transparent 1px 40px),
+      #0A0C0E;
+    border:1px solid var(--line);border-radius:3px;padding:28px;display:flex;gap:40px;align-items:flex-start;
+  }
+  .stage.plain{background:#0A0C0E;background-image:none}
+  .cap-2{font-size:11px;color:var(--fg3);letter-spacing:.02em;margin-bottom:10px}
+
+  /* 托盘 */
+  .taskbar{
+    width:320px;height:48px;background:#16191D;border:1px solid var(--line2);border-radius:4px;
+    display:flex;align-items:center;gap:10px;padding:0 10px;
+  }
+  .taskbar .clock{font-family:var(--mono);font-size:11px;color:var(--fg2);line-height:1.35;text-align:center}
+  .taskbar .appicons{display:flex;gap:8px;color:var(--fg3)}
+  .tray-slot{width:30px;height:30px;display:grid;place-items:center;border:1px solid var(--amber);border-radius:3px;color:var(--amber);background:rgba(242,169,59,.08)}
+  .menu{
+    width:252px;background:#16191D;border:1px solid var(--line3);border-radius:4px;
+    box-shadow:0 18px 40px rgba(0,0,0,.6);padding:5px;
+  }
+  .menu-item{display:flex;align-items:center;gap:9px;height:31px;padding:0 9px;border-radius:2px;font-size:13px;color:var(--fg2)}
+  .menu-item:hover,.menu-item.hot{background:var(--surf3);color:var(--fg)}
+  .menu-item .k{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--fg3)}
+  .menu-item .tick{color:var(--amber)}
+  .menu-sep{height:1px;background:var(--line2);margin:5px 4px}
+  .menu-info{display:flex;align-items:center;gap:8px;height:30px;padding:0 9px;font-family:var(--mono);font-size:10.5px;color:var(--fg3)}
+
+  .glyph-row{display:flex;gap:22px;margin-top:26px}
+  .glyph-cell{width:132px}
+  .glyph-tile{width:44px;height:44px;border:1px solid var(--line2);border-radius:3px;display:grid;place-items:center;background:var(--surf);margin-bottom:8px}
+  .glyph-cell .n{font-size:12px;color:var(--fg2)}
+  .glyph-cell .d{font-size:11px;color:var(--fg3);margin-top:2px;line-height:1.4}
+  .tray-glyph{color:#5C636D}
+  .tray-glyph.run{color:#C9CFD8}
+  .tray-glyph.run .dot{fill:var(--ok)}
+  .tray-glyph.through{color:var(--amber)}
+  .tray-glyph.dead{color:var(--err)}
+  .tray-glyph.paused{color:#6B727C}
+  .tray-glyph.paused::after{content:""}
+
+  /* 悬浮读数 */
+  .preview-mock{
+    position:relative;width:240px;height:427px;background:
+      repeating-linear-gradient(135deg,rgba(255,255,255,.018) 0 2px,transparent 2px 9px),#05070A;
+    border:1px solid var(--line3);display:flex;flex-direction:column;
+  }
+  .preview-mock .corner{position:absolute;width:10px;height:10px;border:1px solid var(--line3)}
+  .preview-mock .c1{left:-1px;top:-1px;border-right:0;border-bottom:0}
+  .preview-mock .c2{right:-1px;top:-1px;border-left:0;border-bottom:0}
+  .preview-mock .c3{left:-1px;bottom:-1px;border-right:0;border-top:0}
+  .preview-mock .c4{right:-1px;bottom:-1px;border-left:0;border-top:0}
+  .hud{
+    position:absolute;left:10px;top:10px;display:flex;align-items:center;gap:7px;height:22px;padding:0 8px;
+    background:rgba(6,8,10,.72);border:1px solid rgba(255,255,255,.09);border-radius:2px;
+    font-family:var(--mono);font-size:10.5px;color:var(--fg2);letter-spacing:.02em;
+  }
+  .hud i{width:5px;height:5px;border-radius:50%;background:var(--ok);display:block}
+  .hud.warn{color:#F6C86B;border-color:rgba(232,178,60,.35)}
+  .hud.warn i{background:var(--warn)}
+  .hud.err{color:#FFB4AE;border-color:rgba(239,91,91,.4)}
+  .hud.err i{background:var(--err)}
+  .hud.lg{position:static;display:inline-flex;width:auto;height:34px;padding:0 12px;gap:10px;font-size:17px;margin-bottom:14px}
+  .hud.lg i{width:8px;height:8px}
+
+  /* 引导 */
+  .dialog{
+    width:760px;background:var(--surf);border:1px solid var(--line3);border-radius:4px;
+    box-shadow:0 30px 70px rgba(0,0,0,.65);display:flex;flex-direction:column;
+  }
+  .dlg-head{height:52px;display:flex;align-items:center;gap:10px;padding:0 20px;border-bottom:1px solid var(--line)}
+  .dlg-title{font-size:14px;font-weight:600}
+  .dlg-head .grow{flex:1}
+  .steps{display:flex;gap:6px;align-items:center}
+  .steps em{font-family:var(--mono);font-size:10.5px;font-style:normal;color:var(--fg3);border:1px solid var(--line2);width:20px;height:20px;display:grid;place-items:center;border-radius:2px}
+  .steps em.on{color:var(--amber);border-color:rgba(242,169,59,.6);background:var(--amber-soft)}
+  .steps em.done{color:var(--ok);border-color:rgba(69,214,160,.35)}
+  .dlg-body{padding:20px;display:flex;gap:22px}
+  .dlg-col{flex:1;min-width:0}
+  .dlg-lead{font-size:13px;color:var(--fg2);line-height:1.65;margin-bottom:16px}
+  .check-list{display:flex;flex-direction:column;gap:0;border-top:1px solid var(--line)}
+  .check-list div{display:flex;align-items:center;gap:8px;height:32px;border-bottom:1px solid var(--line);font-size:12px;color:var(--fg2)}
+  .check-list .ok{color:var(--ok)}
+  .check-list .warn{color:var(--warn)}
+  .check-list .v{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--fg3)}
+  .dlg-foot{height:54px;display:flex;align-items:center;gap:8px;padding:0 20px;border-top:1px solid var(--line)}
+  .dlg-foot .grow{flex:1}
+
+  /* 收起细条 */
+  .strip{width:520px}
+  .strip .seg{display:flex;align-items:center;gap:7px}
+  .strip .sep2{width:1px;height:20px;background:var(--line2);margin:0 4px}
+  .strip .num{font-size:11px;color:var(--fg2)}
+  .shadow-wrap{padding:20px;background:#090B0D;border:1px solid var(--line);border-radius:3px}
+</style>
+</head>
+<body>
+<div class="board">
+
+  <div class="doc-head">
+    <div>
+      <div class="doc-title">Glimpse 桌面客户端</div>
+      <div class="doc-sub" style="margin-top:4px">托盘、悬浮读数、首次引导与收起态 · 暗场后台方向</div>
+    </div>
+    <div class="grow"></div>
+    <div class="stamp">0.0.2 · 1440 × 900 · 主控面板见 panel.html</div>
+  </div>
+
+  <!-- 01 托盘 -->
+  <section class="spec">
+    <div class="spec-cap"><span class="spec-no">01</span><span class="spec-name">托盘菜单</span><span class="spec-note">主控面板关掉之后唯一的入口；菜单项与面板里的开关是同一个状态</span></div>
+    <div class="stage" style="gap:44px">
+      <div style="flex:0 0 320px">
+        <div class="cap-2">任务栏托盘区与展开的菜单</div>
+        <div class="menu" style="margin-bottom:8px">
+          <div class="menu-item hot">打开主控面板<span class="k">双击图标</span></div>
+          <div class="menu-sep"></div>
+          <div class="menu-item">暂停监看</div>
+          <div class="menu-item">点击穿透<span class="tick">✓</span><span class="k">Ctrl+Alt+P</span></div>
+          <div class="menu-item">窗口内读数<span class="tick">✓</span></div>
+          <div class="menu-sep"></div>
+          <div class="menu-info"><span class="dot live" style="width:5px;height:5px"></span>副屏 #1 → 主屏 #0 · 42 fps</div>
+          <div class="menu-item">重置预览窗位置</div>
+          <div class="menu-sep"></div>
+          <div class="menu-item">打开日志目录</div>
+          <div class="menu-item">设置…</div>
+          <div class="menu-sep"></div>
+          <div class="menu-item">退出 Glimpse<span class="k">Ctrl+Alt+Q</span></div>
+        </div>
+        <div class="taskbar">
+          <div class="appicons">
+            <span style="font-size:13px">⌸</span>
+          </div>
+          <div class="grow" style="flex:1"></div>
+          <div class="tray-slot"><svg class="tray-glyph through" width="18" height="18" viewBox="0 0 20 20" fill="none">
+  <rect x="2.5" y="3.5" width="15" height="10.5" stroke="currentColor" stroke-width="1.3"/>
+  <rect x="9.5" y="8.5" width="5" height="3.5" fill="currentColor"/>
+  <path d="M7 17h6" stroke="currentColor" stroke-width="1.3"/><path d="M10 14v3" stroke="currentColor" stroke-width="1.3"/>
+</svg></div>
+          <div style="display:flex;gap:9px;align-items:center;color:var(--fg3);font-size:12px">
+            <span>⌃</span><span>▮</span><span>⌁</span>
+          </div>
+          <div class="clock">19:12<br>2026/10/22</div>
+        </div>
+      </div>
+      <div style="flex:0 0 566px;align-self:center">
+        <div class="cap-2">图标四态：形状不变，只换颜色与一个附加标记</div>
+        <div class="glyph-row">
+          <div class="glyph-cell">
+            <div class="glyph-tile"><svg class="tray-glyph run" width="18" height="18" viewBox="0 0 20 20" fill="none">
+  <rect x="2.5" y="3.5" width="15" height="10.5" stroke="currentColor" stroke-width="1.3"/>
+  <rect x="9.5" y="8.5" width="5" height="3.5" fill="currentColor"/>
+  <path d="M7 17h6" stroke="currentColor" stroke-width="1.3"/><path d="M10 14v3" stroke="currentColor" stroke-width="1.3"/>
+</svg></div>
+            <div class="n">正常监看</div><div class="d">中性白，不抢托盘注意力</div>
+          </div>
+          <div class="glyph-cell">
+            <div class="glyph-tile"><svg class="tray-glyph through" width="18" height="18" viewBox="0 0 20 20" fill="none">
+  <rect x="2.5" y="3.5" width="15" height="10.5" stroke="currentColor" stroke-width="1.3"/>
+  <rect x="9.5" y="8.5" width="5" height="3.5" fill="currentColor"/>
+  <path d="M7 17h6" stroke="currentColor" stroke-width="1.3"/><path d="M10 14v3" stroke="currentColor" stroke-width="1.3"/>
+</svg></div>
+            <div class="n">穿透中</div><div class="d">琥珀，和面板里的开关同色</div>
+          </div>
+          <div class="glyph-cell">
+            <div class="glyph-tile"><svg class="tray-glyph dead" width="18" height="18" viewBox="0 0 20 20" fill="none">
+  <rect x="2.5" y="3.5" width="15" height="10.5" stroke="currentColor" stroke-width="1.3"/>
+  <rect x="9.5" y="8.5" width="5" height="3.5" fill="currentColor"/>
+  <path d="M7 17h6" stroke="currentColor" stroke-width="1.3"/><path d="M10 14v3" stroke="currentColor" stroke-width="1.3"/>
+</svg></div>
+            <div class="n">无画面</div><div class="d">红色，鼠标悬停出原因</div>
+          </div>
+          <div class="glyph-cell">
+            <div class="glyph-tile"><svg class="tray-glyph paused" width="18" height="18" viewBox="0 0 20 20" fill="none">
+  <rect x="2.5" y="3.5" width="15" height="10.5" stroke="currentColor" stroke-width="1.3"/>
+  <rect x="9.5" y="8.5" width="5" height="3.5" fill="currentColor"/>
+  <path d="M7 17h6" stroke="currentColor" stroke-width="1.3"/><path d="M10 14v3" stroke="currentColor" stroke-width="1.3"/>
+</svg></div>
+            <div class="n">已暂停</div><div class="d">灰，抓取会话已释放</div>
+          </div>
+        </div>
+      </div>
+      <div style="flex:1;align-self:center">
+        <div style="margin-top:0">
+          <div class="cap-2">规则</div>
+          <div class="vi" style="font-size:13px;line-height:1.85;color:var(--fg3);max-width:520px">
+            菜单里的勾选与面板开关共用一处状态，改哪边都立刻生效。<br>
+            托盘图标不显示帧率，避免每秒重绘；要看数字用窗口内读数。<br>
+            退出前确认一次「正在监看中」，因为退出会断开舞台画面。
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 悬浮读数 -->
+  <section class="spec">
+    <div class="spec-cap"><span class="spec-no">02</span><span class="spec-name">窗口内读数</span><span class="spec-note">画在独立子窗口上，不进入交换链；演出中只用余光看，所以只有两个数</span></div>
+    <div class="stage">
+      <div>
+        <div class="cap-2">预览窗左上角 · 常态</div>
+        <div class="preview-mock">
+          <span class="corner c1"></span><span class="corner c2"></span><span class="corner c3"></span><span class="corner c4"></span>
+          <div class="hud"><i></i>42 fps · 18 ms</div>
+        </div>
+      </div>
+      <div style="flex:0 0 300px">
+        <div class="cap-2">三种状态（按 1.7 倍尺寸重绘，非缩放）</div>
+        <div style="display:flex;flex-direction:column;align-items:flex-start">
+          <div class="hud lg"><i></i>42 fps · 18 ms</div>
+          <div class="hud warn lg"><i></i>31 fps · 47 ms · 超阈值</div>
+          <div class="hud err lg"><i></i>无画面 · 3.2 秒</div>
+        </div>
+      </div>
+      <div style="flex:1;align-self:flex-start">
+        <div class="cap-2">规则</div>
+        <div style="max-width:520px;color:var(--fg3);font-size:13px;line-height:1.85">
+          读数只在开启时出现，半透明底 + 1px 描边，压在任何画面上都能读。<br>
+          超过面板里设置的延迟上限才变琥珀，持续 3 秒无帧才变红并写秒数——<br>
+          单帧抖动不报警，避免演出中闪烁干扰。
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 03 首次引导 -->
+  <section class="spec">
+    <div class="spec-cap"><span class="spec-no">03</span><span class="spec-name">首次引导</span><span class="spec-note">三步：确认两块屏 → 确认管线可用 → 试运行；每步都能直接看到结果，不是填完才知道</span></div>
+    <div class="stage plain" style="justify-content:center">
+      <div class="dialog">
+        <div class="dlg-head">
+          <span class="dlg-title">先确认两块屏</span>
+          <div class="grow"></div>
+          <div class="steps"><em class="done">1</em><em class="on">2</em><em>3</em></div>
+        </div>
+        <div class="dlg-body">
+          <div class="dlg-col">
+            <div class="dlg-lead">选中要监看的屏和显示预览的屏。方向反了就用中间的箭头交换，不需要记命令行参数。</div>
+            <button class="screen-card on">
+              <span class="screen-thumb"><i style="width:11px;height:19px"></i></span>
+              <span class="sc-main"><span class="sc-name">副屏 #1 <span class="badge">竖屏</span></span><span class="sc-meta">1080×1920 · 60 Hz · NVIDIA</span></span>
+              <span class="sc-check">✓</span><span class="ticks"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></span>
+            </button>
+            <div style="display:flex;align-items:center;gap:8px;margin:10px 0;color:var(--fg3);font-size:11px">
+              <span style="flex:1;height:1px;background:var(--line)"></span>预览显示在<span style="flex:1;height:1px;background:var(--line)"></span>
+            </div>
+            <button class="screen-card on">
+              <span class="screen-thumb"><i style="width:21px;height:12px"></i></span>
+              <span class="sc-main"><span class="sc-name">主屏 #0 <span class="badge">主显示器</span></span><span class="sc-meta">2560×1440 · 180 Hz · Intel</span></span>
+              <span class="sc-check">✓</span><span class="ticks"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></span>
+            </button>
+          </div>
+          <div class="dlg-col">
+            <div class="cap-2">自动检查</div>
+            <div class="check-list">
+              <div><span class="ok">✓</span>窗口捕获可用<span class="v">WGC</span></div>
+              <div><span class="ok">✓</span>高性能适配器<span class="v">RTX 4070</span></div>
+              <div><span class="ok">✓</span>预览窗已排除出捕获<span class="v">0x11</span></div>
+              <div><span class="warn">!</span>预览屏在另一块显卡上<span class="v">+8 ms</span></div>
+              <div><span class="ok">✓</span>热键可用<span class="v">Ctrl+Alt+P</span></div>
+            </div>
+            <div style="margin-top:12px;font-size:13px;color:var(--fg3);line-height:1.7">
+              跨适配器不是错误，只是延迟会高一点。想追更低延迟，把预览窗拖到同一块显卡驱动的屏上。
+            </div>
+          </div>
+        </div>
+        <div class="dlg-foot">
+          <button class="btn quiet">跳过引导</button>
+          <div class="grow"></div>
+          <button class="btn">上一步</button>
+          <button class="btn primary">下一步 · 试运行 10 秒</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 04 收起态 -->
+  <section class="spec">
+    <div class="spec-cap"><span class="spec-no">04</span><span class="spec-name">收起态</span><span class="spec-note">演出开始后把面板收成一条，贴着屏幕底边；点任意处展开回主控面板</span></div>
+    <div class="stage">
+      <div class="shadow-wrap">
+        <div class="strip">
+          <span class="dot live"></span>
+          <span class="seg"><span class="num">副屏 #1 → 主屏 #0</span></span>
+          <span class="sep2"></span>
+          <span class="seg num">42 fps</span>
+          <span class="sep2"></span>
+          <span class="seg num">18 ms</span>
+          <span style="flex:1"></span>
+          <span class="seg"><span class="vi" style="font-size:11px">穿透</span><button class="sw on" style="width:28px;height:15px"><i style="width:9px;height:9px"></i></button></span>
+          <button class="btn sm">展开</button>
+        </div>
+      </div>
+      <div style="max-width:520px;color:var(--fg3);font-size:13px;line-height:1.85;padding-top:4px">
+        细条只保留「还活着吗」需要的三个信息：状态灯、链路、两个数字。<br>
+        穿透开关留在细条上，因为演出中临时要让观众点到预览区，只有它有被切换的可能。<br>
+        所有操作仍然走同一个状态，展开后开关位置不变。
+      </div>
+    </div>
+  </section>
+
+
+  <!-- 05 关闭与单实例 -->
+  <section class="spec">
+    <div class="spec-cap"><span class="spec-no">05</span><span class="spec-name">关闭与单实例</span><span class="spec-note">监看工具的生命周期：关窗不等于退出，退出等于断掉舞台画面，所以要二次确认</span></div>
+    <div class="stage">
+      <div style="flex:0 0 480px">
+        <div class="cap-2">第一次点关闭时问一次，记住选择后不再问</div>
+        <div class="dialog" style="width:480px">
+          <div class="dlg-head"><span class="dlg-title">关闭窗口后仍会继续监看</span><div class="grow"></div><button class="btn quiet sm" aria-label="关闭"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.1"/></svg></button></div>
+          <div class="dlg-body" style="padding:18px 20px;display:block">
+            <div class="dlg-lead" style="margin-bottom:12px">预览窗不会中断，Glimpse 收进托盘继续运行。要完全退出，右键托盘图标选「退出 Glimpse」。</div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg3)">
+              <span class="sw on" style="width:28px;height:15px"><i style="width:9px;height:9px"></i></span>
+              记住我的选择，下次直接收进托盘
+            </label>
+          </div>
+          <div class="dlg-foot">
+            <button class="btn quiet">退出程序</button>
+            <div class="grow"></div>
+            <button class="btn primary">收进托盘</button>
+          </div>
+        </div>
+      </div>
+      <div style="flex:1">
+        <div class="cap-2">规则</div>
+        <div style="color:var(--fg3);font-size:13px;line-height:1.9;max-width:540px">
+          <b style="color:var(--fg2);font-weight:500">关闭 / 最小化</b> = 收进托盘，捕获与呈现都不停，舞台画面不中断。<br>
+          <b style="color:var(--fg2);font-weight:500">托盘退出</b> = 真正退出。正在监看时要点一次确认，因为退出会让舞台立刻失去预览。<br>
+          <b style="color:var(--fg2);font-weight:500">单实例</b>：再次启动不会开第二个进程，而是激活已有面板并置前；正在监看时不弹框、不报错。<br>
+          <b style="color:var(--fg2);font-weight:500">开机自启</b>：登录后静默进托盘，不开面板、不抢焦点。
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

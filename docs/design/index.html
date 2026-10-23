@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Glimpse · 桌面客户端设计说明</title>
+<link rel="stylesheet" href="panel.css">
+<style>
+  body{background:#070809;overflow-x:hidden}
+  .doc{width:1180px;margin:0 auto;padding:52px 0 80px}
+  .head{display:flex;align-items:flex-end;gap:18px;border-bottom:1px solid var(--line);padding-bottom:22px}
+  .h1{font-size:26px;font-weight:600;letter-spacing:.01em;line-height:1.25}
+  .h1 small{display:block;font-size:12px;font-weight:400;color:var(--fg3);font-family:var(--mono);margin-top:8px;letter-spacing:.04em}
+  .head .grow{flex:1}
+  .head .meta{font-family:var(--mono);font-size:13px;color:var(--fg3);text-align:right;line-height:1.9}
+  h2{font-size:13px;font-weight:600;color:var(--fg2);letter-spacing:.06em;margin:44px 0 16px;display:flex;align-items:center;gap:10px}
+  h2::after{content:"";flex:1;height:1px;background:var(--line)}
+  p.lead{font-size:14px;line-height:1.95;color:var(--fg2);max-width:560px}
+  p.lead b{color:var(--fg);font-weight:600}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:28px 40px}
+  .note{font-size:13px;line-height:1.9;color:var(--fg3);max-width:540px}
+  .note b{color:var(--fg2);font-weight:500}
+
+  .pw-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+  .pw{border:1px solid var(--line);border-radius:3px;overflow:hidden}
+  .pw .chipc{height:64px}
+  .pw .info{padding:8px 10px;background:var(--surf)}
+  .pw .n{font-size:12px;color:var(--fg2)}
+  .pw .hex{font-family:var(--mono);font-size:11px;color:var(--fg3);margin-top:2px}
+  .pw .use{font-size:11px;color:var(--fg3);margin-top:5px;line-height:1.5}
+
+  .type-row{display:flex;align-items:baseline;gap:18px;padding:10px 0;border-bottom:1px solid var(--line)}
+  .type-row .spec{width:132px;font-family:var(--mono);font-size:11px;color:var(--fg3);flex:0 0 132px}
+  .type-row .sample{color:var(--fg)}
+
+  .kit{display:flex;flex-wrap:wrap;gap:14px;align-items:center;padding:20px;border:1px solid var(--line);border-radius:3px;background:var(--surf)}
+  .kit-sep{width:1px;height:26px;background:var(--line2)}
+
+  .wall{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .shot{border:1px solid var(--line);border-radius:3px;overflow:hidden;background:var(--surf)}
+  .shot img{display:block;width:100%;height:auto}
+  .shot .cap{display:flex;align-items:baseline;gap:8px;padding:9px 12px;border-top:1px solid var(--line)}
+  .shot .cap b{font-size:12px;font-weight:600;color:var(--fg2)}
+  .shot .cap span{font-size:11px;color:var(--fg3)}
+
+  ol.dec{margin:0;padding-left:0;max-width:560px;counter-reset:d;list-style:none}
+  ol.dec li{counter-increment:d;position:relative;padding:11px 0 11px 34px;border-top:1px solid var(--line);font-size:13px;line-height:1.8;color:var(--fg2)}
+  ol.dec li::before{content:counter(d,decimal-leading-zero);position:absolute;left:0;top:12px;font-family:var(--mono);font-size:11px;color:var(--amber)}
+  ol.dec li b{color:var(--fg)}
+  .tag{display:inline-block;font-family:var(--mono);font-size:10px;color:var(--fg3);border:1px solid var(--line2);padding:0 5px;line-height:16px;border-radius:2px;margin-left:6px;vertical-align:1px}
+</style>
+</head>
+<body>
+<div class="doc">
+
+  <div class="head">
+    <div>
+      <div class="h1">Glimpse 桌面客户端<small>Stage Black · 暗场后台方向</small></div>
+    </div>
+    <div class="grow"></div>
+    <div class="meta">0.0.2 · 设计稿<br>1440 × 900 · 96 DPI<br>2026-10-22</div>
+  </div>
+
+  <h2>一句话方向</h2>
+  <p class="lead">
+    <b>像灯控台一样，一眼确认「信号还活着」，其余全部退到黑里。</b>
+    用户站在侧台、屏幕亮度低、只能分半只眼睛看它，所以这一屏不做功能罗列，
+    只回答三件事：画面通不通、延迟有没有超标、现在该不该动手。
+  </p>
+  <div class="cols" style="margin-top:22px">
+    <div class="note"><b>为什么不走 Windows 原生设置那条路</b><br>系统风更安全，但纯黑的预览窗和浅色设置页放在一起会互相削弱；演出中切回面板，亮度跳变会晃眼。</div>
+    <div class="note"><b>为什么不像 OBS 那样做三栏</b><br>Glimpse 只有一个源、一个输出、一条链路。三栏是为多场景多源设计的，照搬会把「确认还活着」这件事稀释掉。</div>
+  </div>
+
+  <h2>调性</h2>
+  <div class="cols">
+    <div class="note">
+      <b>能量 安静</b> — 观众在台上，界面不该抢注意力。强调色面积 ≤ 8%。<br>
+      <b>完成度 精致</b> — 用户会盯着数字怀疑它是不是坏了，1px 对齐、无模糊阴影。<br>
+      <b>密度 密</b> — 每天开几小时的专业工具，一屏看完状态，不折叠、不分页。
+    </div>
+    <div class="note">
+      <b>分量 重</b> — 黑底 + 等宽数字 + 硬边，像一块硬件面板。<br>
+      <b>严肃度 庄重</b> — 出错代价高：不用插画、不用弹跳动效、不用彩底胶囊。<br>
+      <b>动效</b> — 只有三处：帧点流动、状态切换 120–160ms、测试进度。全部只在状态变化处出现。
+    </div>
+  </div>
+
+  <h2>色彩</h2>
+  <div class="pw-row">
+    <div class="pw"><div class="chipc" style="background:#08090B"></div><div class="info"><div class="n">窗口底</div><div class="hex">#08090B</div><div class="use">与预览窗同一档黑，切回面板不跳色</div></div></div>
+    <div class="pw"><div class="chipc" style="background:#101215"></div><div class="info"><div class="n">面板</div><div class="hex">#101215</div><div class="use">分组块底，靠 1px 线不用阴影</div></div></div>
+    <div class="pw"><div class="chipc" style="background:#21252B"></div><div class="info"><div class="n">分隔线</div><div class="hex">#21252B</div><div class="use">层级靠线宽和位置，不叠加描边</div></div></div>
+    <div class="pw"><div class="chipc" style="background:#E8EBF0"></div><div class="info"><div class="n">主文字</div><div class="hex">#E8EBF0</div><div class="use">13–14px，正文对比度 ≥ 12:1</div></div></div>
+    <div class="pw"><div class="chipc" style="background:#F2A93B"></div><div class="info"><div class="n">强调 · 琥珀</div><div class="hex">#F2A93B</div><div class="use">只在选中、主动作、当前读数</div></div></div>
+    <div class="pw"><div class="chipc" style="background:#45D6A0"></div><div class="info"><div class="n">正常 · 绿</div><div class="hex">#45D6A0</div><div class="use">状态灯与通过判定，不做装饰</div></div></div>
+    <div class="pw"><div class="chipc" style="background:#E8B23C"></div><div class="info"><div class="n">警告 · 黄</div><div class="hex">#E8B23C</div><div class="use">跨适配器、屏断开、未达标</div></div></div>
+    <div class="pw"><div class="chipc" style="background:#EF5B5B"></div><div class="info"><div class="n">错误 · 红</div><div class="hex">#EF5B5B</div><div class="use">无画面、取消失败，永远配文字</div></div></div>
+  </div>
+  <div class="note" style="margin-top:12px">八色里只有一种是「品牌色」。状态色不可当强调色用，强调色不可当状态色用；两种同时出现时，强调让位给状态。</div>
+
+  <h2>字体</h2>
+  <div>
+    <div class="type-row"><div class="spec">面板标题 · 14/600</div><div class="sample" style="font-size:14px;font-weight:600">投屏链路 · 正在监看</div></div>
+    <div class="type-row"><div class="spec">正文 · 13/400</div><div class="sample" style="font-size:13px">预览窗的像素全部来自交换链，这里不能放任何 WinForms 控件。</div></div>
+    <div class="type-row"><div class="spec">辅助 · 11/400 #8A919C</div><div class="sample" style="font-size:11px;color:var(--fg3)">副屏 #1 · 1080 × 1920 · 60 Hz · NVIDIA</div></div>
+    <div class="type-row"><div class="spec">读数 · 19 mono</div><div class="sample num" style="font-size:19px">42.3 <span style="font-size:11px;color:var(--fg3)">fps</span></div></div>
+    <div class="type-row" style="border-bottom:0"><div class="spec">大字读数 · 30 mono</div><div class="sample num" style="font-size:30px;letter-spacing:-.02em">18 <span style="font-size:12px;color:var(--fg3)">ms</span></div></div>
+  </div>
+  <div class="note" style="margin-top:14px">
+    正文用 Segoe UI Variable Text，中文回退 Microsoft YaHei UI；所有数字、路径、日志、键位用 Cascadia Mono，等宽保证逐帧比较时字不跳。
+    读数比正文大一号，因为它是演出现场唯一会被「扫一眼」的东西。
+  </div>
+
+  <h2>控件语法</h2>
+  <div class="kit">
+    <button class="btn primary">开始 60 秒基准测试</button>
+    <button class="btn">导出 Markdown</button>
+    <button class="btn quiet">恢复默认</button>
+    <span class="kit-sep"></span>
+    <button class="sw on"><i></i></button>
+    <button class="pw"><i></i></button>
+    <span class="kit-sep"></span>
+    <span class="chips"><button class="chip on">60 秒</button><button class="chip">15 秒</button></span>
+    <span class="kit-sep"></span>
+    <span class="pill ok"><i></i>捕获隐身</span>
+    <span class="pill warn"><i></i>跨适配器</span>
+    <span class="kit-sep"></span>
+    <span class="kbd">Ctrl</span><span class="kbd">Alt</span><span class="kbd">P</span>
+  </div>
+  <div class="note" style="margin-top:12px">
+    2px 圆角、1px 描边、无阴影、按下位移 1px。开关是「轨道 + 滑块」，开启时滑块变琥珀、轨道加深而非发光。
+    可选中的对象（显示器）用 1px 琥珀边 + 四角标记，不用彩色左竖条，因为四角标记和预览窗的角标是同一套语言。
+  </div>
+
+  <h2>界面</h2>
+  <div class="wall">
+    <div class="shot"><img src="shots/panel-run.png" alt="主控面板 · 监看"><div class="cap"><b>主控面板 · 监看</b><span>拓扑 + 源/输出 + 基准测试</span></div></div>
+    <div class="shot"><img src="shots/panel-drm.png" alt="主控面板 · 无画面"><div class="cap"><b>无画面（DRM / 独占全屏）</b><span>横向压缩拓扑，把原因和恢复动作放前面</span></div></div>
+    <div class="shot"><img src="shots/panel-test.png" alt="基准测试视图"><div class="cap"><b>基准测试</b><span>配置、结果对照基线表、导出</span></div></div>
+    <div class="shot"><img src="shots/panel-diag.png" alt="诊断视图"><div class="cap"><b>诊断</b><span>设备与管线、日志尾、诊断包</span></div></div>
+    <div class="shot"><img src="shots/panel-lost.png" alt="源屏断开"><div class="cap"><b>源显示器断开</b><span>不静默回退，先报清楚再让人选</span></div></div>
+    <div class="shot"><img src="shots/panel-bench.png" alt="基准测试运行中"><div class="cap"><b>基准测试运行中</b><span>进度与实时指标同处一个块</span></div></div>
+    <div class="shot"><img src="shots/panel-switch.png" alt="切换捕获源"><div class="cap"><b>切换捕获源</b><span>保留最后一帧，不出现黑场</span></div></div>
+    <div class="shot"><img src="shots/panel-narrow.png" alt="1180 窄屏"><div class="cap"><b>1180 × 760</b><span>右栏收成抽屉，拓扑与卡片同步压缩</span></div></div>
+  </div>
+  <div class="note" style="margin-top:14px">托盘、窗口内读数、首次引导与收起态见 <a href="surfaces.html" style="color:var(--amber)">surfaces.html</a>；交互稿入口 <a href="panel.html" style="color:var(--amber)">panel.html</a>（可用 <span class="num">?state=</span> 与 <span class="num">?view=</span> 切状态）。</div>
+
+  <h2>关键决定</h2>
+  <ol class="dec">
+    <li><b>所有操作都放在面板和托盘。</b> 预览窗带 <span class="num">WS_EX_NOREDIRECTIONBITMAP</span>，不能有控件、不能 GDI 绘制，所以它只能显示画面和一层独立子窗口的读数。</li>
+    <li><b>拓扑按真实宽高比画。</b> 副屏是 1080×1920 竖屏，如果画成两个一样大的横矩形，用户看不出哪块是哪块。</li>
+    <li><b>选屏用屏幕卡，不用下拉框。</b> 对象身份是「序号 + 比例 + 分辨率 + 主屏标记」，下拉框收起后这些信息全丢。</li>
+    <li><b>无画面时基准测试仍然可点。</b> 它测的是管线而不是画面，黑屏时更能说明问题；但结果里会标注「无帧」。</li>
+    <li><b>断屏不静默回退。</b> 显示器序号是枚举结果，热插拔后会变；自动换到另一块屏会让舞台直接黑屏。先报清楚，再让人选。</li>
+    <li><b>跨适配器是提示不是错误。</b> 它是这台混合显卡机器上真实存在 +8ms，用黄色药丸标在预览输出标题栏，不弹窗。</li>
+    <li><b>托盘图标不带帧率。</b> 每秒重绘的图标会吃 CPU，也违背「不打扰」；要看数字开窗口内读数。</li>
+    <li><b>收起态保留穿透开关。</b> 演出中唯一可能需要临时改的就是这个，其余都收进面板。</li>
+    <li><b>面板自身不参与渲染循环。</b> 所有读数按 1Hz 更新，窗口静止时不重绘，避免和渲染线程抢 GPU 时间片。</li>
+    <li><b>指标只有五项，名字与 <span class="num">StatsReporter</span> 一一对应：</b>cap / show / age p95 / present p95 / drop。回调年龄必 ≤ 端到端，两者同源同一次采集时间戳；不再出现第三个延迟。</li>
+    <li><b>关闭和最小化都只是收进托盘。</b> 捕获与呈现不停，舞台画面不中断；只有托盘「退出」才结束进程，并且要二次确认。</li>
+    <li><b>持久化以 <span class="num">szDevice</span> 为主键，Index 只做兜底。</b> 卡片显示的是 Windows 显示设置里的编号（显示 1 / 显示 2），不是内部枚举序号。</li>
+    <li><b>基准测试只有一个入口。</b> 监看页只负责开始和看上次摘要，全部配置都在测试视图，避免两处配置打架。</li>
+  </ol>
+
+</div>
+</body>
+</html>

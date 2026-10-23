@@ -1,0 +1,233 @@
+[
+  {
+    "file": "run.png",
+    "state": "run",
+    "size": "1440x900",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [],
+    "lint": [
+      {
+        "rule": "smallText",
+        "label": "正文小于 13px",
+        "count": 1,
+        "examples": [
+          "div.meter-note「回调年龄 = 采集 → 回调；端到端 = 采集 」（12px）"
+        ]
+      }
+    ]
+  },
+  {
+    "file": "switch.png",
+    "state": "switch",
+    "size": "1440x900",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [],
+    "lint": [
+      {
+        "rule": "smallText",
+        "label": "正文小于 13px",
+        "count": 1,
+        "examples": [
+          "div.meter-note「回调年龄 = 采集 → 回调；端到端 = 采集 」（12px）"
+        ]
+      }
+    ]
+  },
+  {
+    "file": "switchfail.png",
+    "state": "switchfail",
+    "size": "1440x900",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [],
+    "lint": [
+      {
+        "rule": "smallText",
+        "label": "正文小于 13px",
+        "count": 1,
+        "examples": [
+          "div.meter-note「回调年龄 = 采集 → 回调；端到端 = 采集 」（12px）"
+        ]
+      }
+    ]
+  },
+  {
+    "file": "drm.png",
+    "state": "drm",
+    "size": "1440x900",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [],
+    "lint": [
+      {
+        "rule": "smallText",
+        "label": "正文小于 13px",
+        "count": 1,
+        "examples": [
+          "div.meter-note「回调年龄 = 采集 → 回调；端到端 = 采集 」（12px）"
+        ]
+      }
+    ]
+  },
+  {
+    "file": "lost.png",
+    "state": "lost",
+    "size": "1440x900",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [],
+    "lint": [
+      {
+        "rule": "smallText",
+        "label": "正文小于 13px",
+        "count": 1,
+        "examples": [
+          "div.meter-note「回调年龄 = 采集 → 回调；端到端 = 采集 」（12px）"
+        ]
+      }
+    ]
+  },
+  {
+    "file": "bench.png",
+    "state": "bench",
+    "size": "1440x900",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [],
+    "lint": [
+      {
+        "rule": "smallText",
+        "label": "正文小于 13px",
+        "count": 1,
+        "examples": [
+          "div.meter-note「回调年龄 = 采集 → 回调；端到端 = 采集 」（12px）"
+        ]
+      }
+    ]
+  },
+  {
+    "file": "run-@2x.png",
+    "state": "run",
+    "size": "1440x900",
+    "zoom": 2,
+    "animationWaitMs": 0,
+    "issues": [],
+    "lint": [
+      {
+        "rule": "smallText",
+        "label": "正文小于 13px",
+        "count": 1,
+        "examples": [
+          "div.meter-note「回调年龄 = 采集 → 回调；端到端 = 采集 」（12px）"
+        ]
+      }
+    ]
+  },
+  {
+    "file": "motion-probe",
+    "state": "run",
+    "size": "1440x900",
+    "zoom": 1,
+    "motion": {
+      "load": {
+        "elements": 3,
+        "loops": 3,
+        "maxMove": 121,
+        "maxSize": 0,
+        "maxOpacity": 1,
+        "top": [
+          {
+            "el": "i",
+            "move": 115,
+            "size": 0,
+            "opacity": 0.96,
+            "loop": true,
+            "sources": [
+              "css:flow"
+            ]
+          },
+          {
+            "el": "span.scan",
+            "move": 121,
+            "size": 0,
+            "opacity": 0,
+            "loop": true,
+            "sources": [
+              "css:scan"
+            ]
+          },
+          {
+            "el": "i",
+            "move": 51,
+            "size": 0,
+            "opacity": 1,
+            "loop": true,
+            "sources": [
+              "css:flow"
+            ]
+          }
+        ]
+      },
+      "hero": {
+        "elements": 0,
+        "loops": 0,
+        "maxMove": 0,
+        "maxSize": 0,
+        "maxOpacity": 0,
+        "top": [],
+        "layers": 0
+      },
+      "scroll": {
+        "elements": 0,
+        "loops": 0,
+        "maxMove": 0,
+        "maxSize": 0,
+        "maxOpacity": 0,
+        "top": [],
+        "scrollable": false
+      }
+    },
+    "issues": [
+      "首次进入：只有持续循环的动画，没有一次性的出场"
+    ]
+  },
+  {
+    "file": "motion-entry-end.jpg",
+    "state": "run",
+    "size": "1440x900",
+    "zoom": 1,
+    "group": "entry",
+    "issues": [],
+    "frames": {
+      "start": {
+        "file": "motion-entry-start.jpg",
+        "source": "Page.screencastFrame",
+        "timeMs": 215
+      },
+      "mid": {
+        "file": "motion-entry-mid.jpg",
+        "source": "Page.screencastFrame",
+        "timeMs": 961
+      },
+      "end": {
+        "file": "motion-entry-end.jpg",
+        "source": "Page.captureScreenshot",
+        "timeMs": 1717
+      }
+    },
+    "sampling": {
+      "mode": "entry"
+    },
+    "durationMs": 1717,
+    "consistency": {
+      "status": "matched",
+      "reference": "motion-entry-end.jpg",
+      "different": false,
+      "changedPixels": 66,
+      "maxTilePixels": 34,
+      "pixelRatio": 0.00005092592592592592
+    }
+  }
+]

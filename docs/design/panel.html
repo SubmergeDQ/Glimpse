@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Glimpse · 主控面板</title>
+<link rel="stylesheet" href="panel.css">
+<style>
+  html,body{overflow:hidden}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px 22px}
+  .view{display:flex;flex-direction:column;gap:12px;min-height:0;flex:1}
+</style>
+<script defer src="vendor/alpine.min.js"></script>
+<script>
+function ui(){
+  const p = new URLSearchParams(location.search);
+  const state = p.get('state') || 'run';
+  const view  = p.get('view')  || 'monitor';
+  return {
+    view, state,
+    running: state !== 'drm',
+    clickThrough: true,
+    overlay: true,
+    followSource: true,
+    source: 1, preview: 0,
+    preset: 50,
+    repeat: 3,
+    get live(){ return this.state === 'run' || this.state === 'bench' || this.state === 'switchfail'; },
+    get switching(){ return this.state === 'switch'; },
+    get failed(){ return this.state === 'switchfail'; },
+    drawer: false,
+    get dead(){ return this.state === 'drm'; },
+    get lost(){ return this.state === 'lost'; },
+    get bench(){ return this.state === 'bench'; },
+    get src(){ return this.source; },
+    pickSource(i){ if (this.state==='lost') return; if (i===this.preview) this.preview = i===0?1:0; this.source=i; },
+    pickPreview(i){ if (i===this.source) this.source = i===0?1:0; this.preview=i; },
+    fmt(n){ return this.live ? n : '—'; }
+  };
+}
+</script>
+</head>
+<body>
+<div class="app" x-data="ui()" :class="{'has-banner': dead || lost || state==='switchfail', 'drawer-open': drawer}">>
+
+  <!-- 标题栏 -->
+  <header class="titlebar">
+    <div class="brand"><span class="mark"></span><span class="name">Glimpse</span><span class="ver">0.0.2</span></div>
+    <div class="tb-spacer"></div>
+    <div class="wintools">
+      <button title="最小化"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 5.5h8" stroke="currentColor" stroke-width="1.1"/></svg></button>
+      <button title="最大化"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><rect x="1.5" y="1.5" width="7" height="7" stroke="currentColor" stroke-width="1.1"/></svg></button>
+      <button class="close" title="关闭"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.1"/></svg></button>
+    </div>
+  </header>
+
+  <div class="body">
+    <!-- 图标轨 -->
+    <nav class="rail">
+      <button class="rail-btn" :class="{on:view==='monitor'}" @click="view='monitor'" title="监看"><svg width="17" height="17" viewBox="0 0 20 20" fill="none"><rect x="2.5" y="4" width="15" height="10.5" stroke="currentColor" stroke-width="1.4"/><path d="M7 17h6M10 14.5V17" stroke="currentColor" stroke-width="1.4"/></svg><span class="lbl">监看</span></button>
+      <button class="rail-btn" :class="{on:view==='test'}" @click="view='test'" title="基准测试"><svg width="17" height="17" viewBox="0 0 20 20" fill="none"><path d="M3 14a8 8 0 1114 0" stroke="currentColor" stroke-width="1.4"/><path d="M10 13.5L13.5 8" stroke="currentColor" stroke-width="1.4"/><circle cx="10" cy="14" r="1.2" fill="currentColor"/></svg><span class="lbl">测试</span></button>
+      <button class="rail-btn" :class="{on:view==='diag'}" @click="view='diag'" title="诊断"><svg width="17" height="17" viewBox="0 0 20 20" fill="none"><path d="M2 11h3l2-5 3 9 2.5-6 1.5 2h4" stroke="currentColor" stroke-width="1.4"/></svg><span class="lbl">诊断</span></button>
+      <button class="rail-btn" title="日志"><svg width="17" height="17" viewBox="0 0 20 20" fill="none"><path d="M4.5 2.5h7l4 4v11h-11z" stroke="currentColor" stroke-width="1.4"/><path d="M11.5 2.5v4h4M7 11h6M7 14h4" stroke="currentColor" stroke-width="1.4"/></svg><span class="lbl">日志</span></button>
+      <div class="rail-spacer"></div>
+      <button class="rail-btn" title="收起为细条"><svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M3 10l5-5 5 5" stroke="currentColor" stroke-width="1.3"/></svg></button>
+      <button class="rail-btn" title="帮助"><svg width="15" height="15" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.3"/><path d="M6.3 6.2A1.8 1.8 0 019.7 6.6c0 1.2-1.7 1.4-1.7 2.6M8 11.6v.5" stroke="currentColor" stroke-width="1.2"/></svg></button>
+    </nav>
+
+    <!-- 主内容 -->
+    <main class="main">
+      <div class="main-scroll">
+
+        <!-- 运行条 -->
+        <div class="runbar">
+          <span class="dot" :class="live ? (dead ? 'err' : (failed ? 'warn' : 'live')) : ((switching || lost) ? 'warn' : 'err')"></span>
+          <span class="run-state" x-text="failed ? '切换失败 · 已回退' : (switching ? '正在切换捕获源' : (live ? '正在监看' : (lost ? '捕获已断开' : '源屏无画面')))"></span>
+          <span class="run-route" x-text="failed ? '副屏 · 显示 2 → 主屏 · 显示 1 · 仍使用原来源' : (switching ? '副屏 · 显示 2 → 主屏 · 显示 1 · 保持在最后一帧' : (lost ? '源显示器已断开 · 预览窗停在最后一帧' : (dead ? '源屏无新帧 · 已持续 00:12' : '捕获 副屏 · 1080×1920@60 → 输出 主屏 · 2560×1440@180')))"></span>
+          <span class="grow"></span>
+          <span class="pill ok"><i></i>捕获隐身</span>
+          <span style="display:flex;align-items:center;gap:6px">
+            <span class="vi" style="font-size:12px">点击穿透</span>
+            <button class="sw" :class="{on:clickThrough}" @click="clickThrough=!clickThrough" aria-label="切换点击穿透"><i></i></button>
+            <span class="kbd">Ctrl</span><span class="kbd">Alt</span><span class="kbd">P</span>
+          </span>
+          <button class="btn quiet sm only-narrow" @click="drawer=!drawer">读数</button>
+          <button class="btn" @click="running=!running">
+            <span x-show="running" x-cloak><svg width="11" height="11" viewBox="0 0 12 12"><rect x="1.5" y="1.5" width="9" height="9" fill="currentColor"/></svg></span><span x-show="!running" x-cloak><svg width="10" height="10" viewBox="0 0 12 12"><path d="M2.5 1.5l8 4.5-8 4.5z" fill="currentColor"/></svg></span>
+            <span x-text="running ? '暂停监看' : '开始监看'"></span>
+          </button>
+        </div>
+
+        <!-- 异常横幅 -->
+        <div class="banner" x-show="dead" x-cloak>
+          <span class="ic"><svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M8 1.8L15 14H1L8 1.8z" stroke="currentColor" stroke-width="1.2"/><path d="M8 6v4M8 11.6v.6" stroke="currentColor" stroke-width="1.3"/></svg></span>
+          <div>
+            <div class="b-title">预览没有画面 · 源屏可能是受保护内容或独占全屏</div>
+            <div class="b-note">浏览器播片、Netflix、部分播放器会启用 DRM，画面在系统层就被屏蔽；独占全屏的舞台软件同样抓不到。改用无边框窗口播放后点「重试捕获」。</div>
+          </div>
+          <div class="grow"></div>
+          <button class="btn sm">重试捕获</button>
+          <button class="btn sm primary">查看排查步骤</button>
+        </div>
+        <div class="banner warn" x-show="state==='switchfail'" x-cloak>
+          <span class="ic"><svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M8 1.8L15 14H1L8 1.8z" stroke="currentColor" stroke-width="1.2"/><path d="M8 6v4M8 11.6v.6" stroke="currentColor" stroke-width="1.3"/></svg></span>
+          <div>
+            <div class="b-title">切换捕获源失败 · 已回退到原来的屏</div>
+            <div class="b-note">新的 WGC 会话没能建立，预览窗继续显示原来的来源，没有中断。多半是目标屏正被独占全屏或被保护内容占用。</div>
+          </div>
+          <div class="grow"></div>
+          <button class="btn sm">查看日志</button>
+          <button class="btn sm primary">重试切换</button>
+        </div>
+        <div class="banner warn" x-show="lost" x-cloak>
+          <span class="ic"><svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M8 1.8L15 14H1L8 1.8z" stroke="currentColor" stroke-width="1.2"/><path d="M8 6v4M8 11.6v.6" stroke="currentColor" stroke-width="1.3"/></svg></span>
+          <div>
+            <div class="b-title">源显示器已从系统中移除</div>
+            <div class="b-note">显示器序号是枚举结果，热插拔后可能变化。重新接入后重试，或在下方选择另一块屏。</div>
+          </div>
+          <div class="grow"></div>
+          <button class="btn sm">重新枚举</button>
+          <button class="btn sm primary">选择其他屏</button>
+        </div>
+
+        <!-- 监看视图 -->
+        <div class="view" x-show="view==='monitor'" x-cloak>
+
+          <!-- 链路 -->
+          <section class="block topo">
+            <div class="block-head">
+              <span class="block-title">投屏链路</span>
+              <span class="pill"><i style="background:var(--fg3)"></i><span x-text="followSource?'主屏适配器跟随':'指定适配器'"></span></span>
+              <div class="grow"></div>
+              <button class="btn quiet sm" @click="source=source===0?1:0; preview=preview===0?1:0"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 5.5h11M9.5 2.5l3 3-3 3M14 10.5H3M6.5 7.5l-3 3 3 3" stroke="currentColor" stroke-width="1.2"/></svg><span>交换方向</span></button>
+            </div>
+            <div class="topo-body">
+              <div class="topo-grid"></div>
+              <div class="mon src" :class="{on:source===1, dead:dead, dim:lost||switching}" :style="'--ar:' + (source===1 ? 0.5625 : 1.7778)">
+                <div class="mon-label" x-text="source===1 ? '投屏源 · 副屏' : '投屏源 · 主屏'"></div>
+                <div class="mon-frame">
+                  <span class="in-grid"></span>
+                  <span class="ticks" :style="source===1?'':'display:none'"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></span>
+                  <span class="in-live" x-show="live"><i></i>实时</span>
+                  <span class="in-tag" x-text="switching ? '切换中' : (lost ? '已断开' : (dead ? '无帧' : (source===1 ? '1080×1920' : '2560×1440')))"></span>
+                </div>
+                <div class="mon-meta" x-text="source===1 ? 'DISPLAY2 · 60 Hz' : 'DISPLAY1 · 180 Hz'"></div>
+              </div>
+              <div class="link" :class="{dead: !live && !switching, switching: switching}"><span class="link-label" x-text="live?'WGC · 显存零拷贝 · 0 读回':(switching?'正在重建 WGC 会话':(dead?'无新帧 · 链路停止':'连接中断'))"></span><i></i><i></i><i></i></div>
+              <div class="mon out" :class="{on:preview===0}" :style="'--ar:' + (preview===0 ? 1.7778 : 0.5625)">
+                <div class="mon-label" x-text="'预览输出 · ' + (preview===0 ? '主屏' : '副屏')"></div>
+                <div class="mon-frame">
+                  <span class="in-grid"></span>
+                  <span class="ticks"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></span>
+                  <span class="in-live" x-show="live"><i></i>实时</span>
+                  <span class="in-tag" x-text="preview===0 ? '2560×1440' : '1080×1920'"></span>
+                </div>
+                <div class="mon-meta" x-text="preview===0 ? 'DISPLAY1 · 180 Hz' : 'DISPLAY2 · 60 Hz'"></div>
+              </div>
+            </div>
+            <div class="topo-foot">
+              <span>捕获 WGC</span><span class="sep">/</span>
+              <span>合成 DXGI 翻转</span><span class="sep">/</span>
+              <span>帧池 2</span><span class="sep">/</span>
+              <span>丢帧 <b x-text="live?'0':'—'" style="color:var(--fg2)"></b></span>
+              <span class="sep">/</span>
+              <span class="pill ok" x-show="live"><i></i>预览窗不出现在捕获结果里</span>
+              <span class="pill warn" x-show="!live"><i></i>预览窗保留最后一帧</span>
+            </div>
+          </section>
+
+          <!-- 两列控制 -->
+          <div class="cols">
+            <section class="block">
+              <div class="block-head">
+                <span class="block-title">投屏源</span>
+                <div class="grow"></div>
+                <button class="btn quiet sm" @click="source=source"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M3 8a5 5 0 105-5H5" stroke="currentColor" stroke-width="1.2"/><path d="M5 0.8L2.6 3 5 5.2" stroke="currentColor" stroke-width="1.2"/></svg><span>重新枚举</span></button>
+              </div>
+              <div class="block-body tight">
+                <button class="screen-card" :class="{on:source===1}" @click="pickSource(1)">
+                  <span class="screen-thumb"><i style="width:11px;height:19px"></i></span>
+                  <span class="sc-main">
+                    <span class="sc-name">副屏 · 显示 2 <span class="badge">竖屏</span><span class="sc-res">1080×1920</span> <span class="badge" style="color:var(--warn);border-color:rgba(232,178,60,.4)" x-show="lost" x-cloak>已断开</span></span>
+                    <span class="sc-meta">1080×1920 · 60 Hz · NVIDIA</span>
+                  </span>
+                  <span class="sc-check"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M2.5 8.5l3.5 3.5 7-8" stroke="currentColor" stroke-width="1.5"/></svg></span>
+                  <span class="ticks"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></span>
+                </button>
+                <button class="screen-card" :class="{on:source===0}" @click="pickSource(0)">
+                  <span class="screen-thumb"><i style="width:21px;height:12px"></i></span>
+                  <span class="sc-main">
+                    <span class="sc-name">主屏 · 显示 1 <span class="badge">主显示器</span><span class="sc-res">2560×1440</span></span>
+                    <span class="sc-meta">2560×1440 · 180 Hz · Intel</span>
+                  </span>
+                  <span class="sc-check"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M2.5 8.5l3.5 3.5 7-8" stroke="currentColor" stroke-width="1.5"/></svg></span>
+                  <span class="ticks"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></span>
+                </button>
+                <div class="row"><span class="row-label">捕获鼠标光标</span><button class="sw on" aria-label="捕获鼠标光标"><i></i></button></div>
+                <div class="row"><span class="row-label">捕获自身窗口<span class="row-hint">以黑块出现</span></span><button class="sw" aria-label="捕获自身窗口"><i></i></button></div>
+                <div class="row"><span class="row-label">HDR 输出</span><span class="group"><span class="row-val" style="color:var(--fg2)">跟随源 · SDR</span><span style="color:var(--fg3)"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 4l3 3 3-3" stroke="currentColor" stroke-width="1.2"/></svg></span></span></div>
+                <div class="row"><span class="row-label">捕获区域<span class="row-hint">整块屏幕</span></span><span class="row-val" style="color:var(--fg2)" x-text="source===1 ? '全屏 1080×1920' : '全屏 2560×1440'"></span></div>
+                <div class="row"><span class="row-label">隐身状态</span><span class="pill ok"><i></i>已排除出捕获</span></div>
+              </div>
+            </section>
+
+            <section class="block">
+              <div class="block-head">
+                <span class="block-title">预览输出</span>
+                <div class="grow"></div>
+                <span class="pill warn"><i></i>跨适配器 · +8 ms</span>
+              </div>
+              <div class="block-body tight">
+                <button class="screen-card" :class="{on:preview===1}" @click="pickPreview(1)">
+                  <span class="screen-thumb"><i style="width:11px;height:19px"></i></span>
+                  <span class="sc-main">
+                    <span class="sc-name">副屏 · 显示 2 <span class="badge">竖屏</span><span class="sc-res">1080×1920</span></span>
+                    <span class="sc-meta">1080×1920 · 60 Hz · NVIDIA</span>
+                  </span>
+                  <span class="sc-check"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M2.5 8.5l3.5 3.5 7-8" stroke="currentColor" stroke-width="1.5"/></svg></span>
+                  <span class="ticks"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></span>
+                </button>
+                <button class="screen-card" :class="{on:preview===0}" @click="pickPreview(0)">
+                  <span class="screen-thumb"><i style="width:21px;height:12px"></i></span>
+                  <span class="sc-main">
+                    <span class="sc-name">主屏 · 显示 1 <span class="badge">主显示器</span><span class="sc-res">2560×1440</span></span>
+                    <span class="sc-meta">2560×1440 · 180 Hz · Intel</span>
+                  </span>
+                  <span class="sc-check"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M2.5 8.5l3.5 3.5 7-8" stroke="currentColor" stroke-width="1.5"/></svg></span>
+                  <span class="ticks"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></span>
+                </button>
+                <div class="row">
+                  <span class="row-label">窗口尺寸</span>
+                  <span class="group chips">
+                    <button class="chip" @click="preset=25">25%</button>
+                    <button class="chip" :class="{on:preset===50}" @click="preset=50">50%</button>
+                    <button class="chip" @click="preset=75">75%</button>
+                    <button class="chip" @click="preset=100">100%</button>
+                    <span class="row-val" style="margin-left:4px">446×792</span>
+                  </span>
+                </div>
+                <div class="row">
+                  <span class="row-label">贴边位置</span>
+                  <span class="group chips">
+                    <button class="chip" @click="null">右上</button>
+                    <button class="chip on">右下</button>
+                    <button class="chip" @click="null">居中</button>
+                    <button class="chip" @click="null">自由</button>
+                    <button class="btn quiet sm" @click="null"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M3 8a5 5 0 105-5H5" stroke="currentColor" stroke-width="1.2"/><path d="M5 0.8L2.6 3 5 5.2" stroke="currentColor" stroke-width="1.2"/></svg></button>
+                  </span>
+                </div>
+                <div class="row"><span class="row-label">始终最前<span class="row-hint">盖住全屏软件</span></span><button class="sw on" aria-label="始终最前"><i></i></button></div>
+                <div class="row"><span class="row-label">窗口内读数<span class="row-hint">帧率与延迟</span></span><button class="sw" :class="{on:overlay}" @click="overlay=!overlay" aria-label="窗口内读数"><i></i></button></div>
+                <div class="row"><span class="row-label">帧延迟上限<span class="row-hint">越小越跟手</span></span><span class="row-val" style="color:var(--fg2)">1 帧</span></div>
+              </div>
+            </section>
+          </div>
+
+          <!-- 基准测试 -->
+          <section class="block bench">
+            <div class="block-head">
+              <span class="block-title">基准测试</span>
+              <div class="grow"></div>
+              <span class="run-route" x-show="bench" x-cloak>运行中 · 与 0.0.2 基线对照</span>
+              <button class="btn quiet sm"><svg width="17" height="17" viewBox="0 0 20 20" fill="none"><path d="M4.5 2.5h7l4 4v11h-11z" stroke="currentColor" stroke-width="1.4"/><path d="M11.5 2.5v4h4M7 11h6M7 14h4" stroke="currentColor" stroke-width="1.4"/></svg><span>报告</span></button>
+            </div>
+            <div class="block-body" style="padding:10px 12px">
+              <div class="bench-row" x-show="!bench" x-cloak>
+                <span class="pill ok"><i></i>上次通过</span>
+                <span class="run-route">10-22 18:12 · 端到端 p95 18 ms · 丢帧 0</span>
+                <span class="sep">/</span>
+                <span class="run-route">60 秒 · 采样 1 秒 · fps ≥ 58 · p95 ≤ 20 ms</span>
+                <span style="flex:1"></span>
+                <button class="btn quiet sm" @click="view='test'">配置在测试视图</button>
+                <button class="btn primary"><svg width="10" height="10" viewBox="0 0 12 12"><path d="M2.5 1.5l8 4.5-8 4.5z" fill="currentColor"/></svg><span>开始 60 秒基准测试</span></button>
+              </div>
+              <div x-show="bench" x-cloak>
+                <div style="display:flex;align-items:center;gap:12px">
+                  <span class="num" style="font-size:12px;color:var(--amber)">00:38</span>
+                  <div class="progress" style="max-width:280px"><b style="width:63%"></b></div>
+                  <span class="num" style="font-size:11px;color:var(--fg3)">/ 01:00</span>
+                  <span style="flex:1"></span>
+                  <button class="btn danger sm">停止测试</button>
+                </div>
+                <div class="bench-live" style="margin-top:10px">
+                  <div><span class="k">捕获帧率</span><span class="v">42.3<small style="font-size:10px;color:var(--fg3)">fps</small></span></div>
+                  <div><span class="k">端到端 p95</span><span class="v">18<small style="font-size:10px;color:var(--fg3)">ms</small></span></div>
+                  <div><span class="k">端到端 max</span><span class="v">31<small style="font-size:10px;color:var(--fg3)">ms</small></span></div>
+                  <div><span class="k">丢帧</span><span class="v">0</span></div>
+                  <div><span class="k">CPU</span><span class="v">0.16<small style="font-size:10px;color:var(--fg3)">核</small></span></div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- 测试视图 -->
+        <div class="view" x-show="view==='test'" x-cloak>
+          <section class="block">
+            <div class="block-head">
+              <span class="block-title">测试配置</span><div class="grow"></div>
+              <span class="run-route">配置随设置保存 · 下次启动沿用</span>
+            </div>
+            <div class="block-body">
+              <div class="grid2">
+                <div class="row"><span class="row-label">单次时长</span><span class="chips"><button class="chip">15 秒</button><button class="chip on">60 秒</button><button class="chip">5 分</button></span></div>
+                <div class="row"><span class="row-label">采样窗口</span><span class="input">1 秒</span></div>
+                <div class="row"><span class="row-label">帧率下限</span><span class="input">≥ 58 fps</span></div>
+                <div class="row"><span class="row-label">延迟上限</span><span class="input">p95 ≤ 20 ms</span></div>
+                <div class="row"><span class="row-label">重复次数<span class="row-hint">取中位数</span></span><span class="chips"><button class="chip">1</button><button class="chip on">3</button><button class="chip">5</button></span></div>
+                <div class="row"><span class="row-label">与基线表对比</span><button class="sw on"><i></i></button></div>
+                <div class="row"><span class="row-label">测试时暂停预览</span><button class="sw"><i></i></button></div>
+                <div class="row"><span class="row-label">完成后自动导出</span><button class="sw on"><i></i></button></div>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:14px;align-items:center">
+                <button class="btn primary"><svg width="10" height="10" viewBox="0 0 12 12"><path d="M2.5 1.5l8 4.5-8 4.5z" fill="currentColor"/></svg><span>开始测试 · 3 × 60 秒</span></button>
+                <button class="btn">恢复默认</button>
+                <span style="flex:1"></span>
+                <span class="muted" style="font-size:11px">预计 3 分 20 秒，期间可继续操作其他面板</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="block">
+            <div class="block-head"><span class="block-title">上次结果</span><div class="grow"></div><span class="run-route" style="color:var(--warn)">帧率目标 58 fps 未达成 · 瓶颈在 WGC 出帧</span><span class="run-route" style="margin-left:12px">10-22 18:12 · 3 次中位数</span></div>
+            <div class="block-body" style="padding:0 12px 6px">
+              <table class="tbl">
+                <thead><tr><th>指标</th><th class="n">本次</th><th class="n">基线 0.0.2</th><th style="width:96px;text-align:right">判定</th></tr></thead>
+                <tbody>
+                  <tr><td class="name">捕获 → 回调 年龄 p95</td><td class="n">15 ms</td><td class="n">5–27 ms</td><td style="text-align:right"><span class="verdict">通过</span></td></tr>
+                  <tr><td class="name">端到端延迟 avg</td><td class="n">12 ms</td><td class="n">7–20 ms</td><td style="text-align:right"><span class="verdict">通过</span></td></tr>
+                  <tr><td class="name">端到端延迟 p95</td><td class="n">18 ms</td><td class="n">18–38 ms</td><td style="text-align:right"><span class="verdict">通过</span></td></tr>
+                  <tr><td class="name">端到端延迟 max</td><td class="n">31 ms</td><td class="n">≤ 35 ms</td><td style="text-align:right"><span class="verdict">通过</span></td></tr>
+                  <tr><td class="name">呈现帧率</td><td class="n">42.0 fps</td><td class="n">32–47 fps</td><td style="text-align:right"><span class="verdict">通过</span></td></tr>
+                  <tr><td class="name">丢帧</td><td class="n">0</td><td class="n">0</td><td style="text-align:right"><span class="verdict">通过</span></td></tr>
+                  <tr><td class="name">CPU</td><td class="n">0.16 核</td><td class="n">0.16 核</td><td style="text-align:right"><span class="verdict">通过</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="block">
+            <div class="block-head"><span class="block-title">测试环境</span><div class="grow"></div><span class="run-route">随报告一起导出</span></div>
+            <div class="block-body" style="padding:8px 12px">
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:18px">
+                <div><div class="muted" style="font-size:11px">适配器</div><div class="num" style="font-size:12px;margin-top:2px">RTX 4070 Laptop</div></div>
+                <div><div class="muted" style="font-size:11px">源 → 预览</div><div class="num" style="font-size:12px;margin-top:2px">1080×1920@60 → 2560×1440@180</div></div>
+                <div><div class="muted" style="font-size:11px">预览窗</div><div class="num" style="font-size:12px;margin-top:2px">446×792 · 50%</div></div>
+                <div><div class="muted" style="font-size:11px">版本</div><div class="num" style="font-size:12px;margin-top:2px">0.0.2 · x64 · net8.0</div></div>
+              </div>
+            </div>
+          </section>
+          <section class="block">
+            <div class="block-head"><span class="block-title">报告</span></div>
+            <div class="block-body" style="display:flex;gap:8px;align-items:center;padding:10px 12px">
+              <button class="btn"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M8 1.5v9M4.5 7.5L8 11l3.5-3.5M2.5 14h11" stroke="currentColor" stroke-width="1.2"/></svg><span>导出 Markdown</span></button>
+              <button class="btn"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="5.5" y="5.5" width="8" height="9" stroke="currentColor" stroke-width="1.2"/><path d="M10.5 3.5v-2h-8v9h2" stroke="currentColor" stroke-width="1.2"/></svg><span>复制表格</span></button>
+              <button class="btn"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M1.5 4.5h5l1.5 2h6.5v7h-13z" stroke="currentColor" stroke-width="1.2"/></svg><span>打开日志目录</span></button>
+              <span style="flex:1"></span>
+              <span class="muted" style="font-size:11px">%LOCALAPPDATA%\Glimpse\reports\2026-10-22-1812.md</span>
+            </div>
+          </section>
+        </div>
+
+        <!-- 诊断视图 -->
+        <div class="view" x-show="view==='diag'" x-cloak>
+          <section class="block">
+            <div class="block-head"><span class="block-title">设备与管线</span><div class="grow"></div><button class="btn quiet sm"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M8 1.5v9M4.5 7.5L8 11l3.5-3.5M2.5 14h11" stroke="currentColor" stroke-width="1.2"/></svg><span>导出诊断包</span></button></div>
+            <div class="block-body" style="padding:0 12px">
+              <table class="tbl">
+                <tbody>
+                  <tr><td class="name" style="width:190px">适配器</td><td class="n" style="text-align:left">NVIDIA GeForce RTX 4070 Laptop · 高性能</td><td class="name" style="width:150px">帧池缓冲</td><td class="n" style="text-align:left">2</td></tr>
+                  <tr><td class="name">D3D 特性级别</td><td class="n" style="text-align:left">11_1</td><td class="name">交换链</td><td class="n" style="text-align:left">FLIP_DISCARD · 2 缓冲</td></tr>
+                  <tr><td class="name">合成</td><td class="n" style="text-align:left">DirectComposition</td><td class="name">帧延迟</td><td class="n" style="text-align:left">1</td></tr>
+                  <tr><td class="name">DPI</td><td class="n" style="text-align:left">PerMonitorV2 · 150%</td><td class="name">HDR</td><td class="n" style="text-align:left">SDR 输出</td></tr>
+                  <tr><td class="name">单实例</td><td class="n" style="text-align:left">持有 · PID 21408</td><td class="name">内存 / 句柄</td><td class="n" style="text-align:left">182 MB / 412</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+          <section class="block" style="flex:1">
+            <div class="block-head"><span class="block-title">最近日志</span><div class="grow"></div><button class="btn quiet sm"><svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M1.5 4.5h5l1.5 2h6.5v7h-13z" stroke="currentColor" stroke-width="1.2"/></svg><span>日志目录</span></button></div>
+            <div class="block-body" style="padding:8px 12px">
+              <div class="log">
+                <div><span class="t">18:41:02.318</span> <b>[显示器]</b> #0 主屏 2560×1440 · #1 副屏 1080×1920 竖屏</div>
+                <div><span class="t">18:41:02.401</span> <b>[设备]</b> 适配器 NVIDIA GeForce RTX 4070 Laptop · 特性级别 11_1</div>
+                <div><span class="t">18:41:02.512</span> <b>[呈现]</b> 交换链 446×792 · FLIP_DISCARD · 立即呈现</div>
+                <div><span class="t">18:41:02.640</span> <b>[捕获]</b> 帧池建立 1080×1920 · 缓冲 2 · 自由线程</div>
+                <div><span class="t">18:41:02.701</span> <b>[隐身]</b> SetWindowDisplayAffinity = 0x11 · 通过</div>
+                <div><span class="t">18:41:02.744</span> <b>[热键]</b> Ctrl+Alt+P 已注册 · Ctrl+Alt+Q 已注册</div>
+                <div><span class="t">18:41:03.002</span> <b>[指标]</b> cap 42.1 show 42.0 p95 18ms max 31ms drop 0 cpu 0.16</div>
+                <div><span class="t">18:41:04.004</span> <b>[指标]</b> cap 42.3 show 42.2 p95 17ms max 29ms drop 0 cpu 0.16</div>
+                <div><span class="t">18:43:11.220</span> <span class="w">[呈现]</span> 窗口尺寸变化 → ResizeBuffers 446×792</div>
+                <div><span class="t">18:47:39.881</span> <span class="w">[合成]</span> 跨适配器输出 · 预期延迟 +8 ms</div>
+                <div><span class="t">19:05:41.553</span> <b>[设置]</b> 写入 settings.json · 临时文件原子替换</div>
+                <div><span class="t">19:06:02.001</span> <b>[托盘]</b> 菜单打开 · 点击穿透 true</div>
+                <div><span class="t">19:07:12.884</span> <span class="w">[热键]</span> Ctrl+Alt+P 被占用 · 回退 Ctrl+Shift+P</div>
+                <div><span class="t">19:07:12.901</span> <b>[热键]</b> Ctrl+Shift+P 已注册</div>
+                <div><span class="t">19:09:30.004</span> <b>[指标]</b> cap 42.4 show 42.3 p95 17ms max 28ms drop 0 cpu 0.16</div>
+                <div><span class="t">19:09:31.006</span> <b>[指标]</b> cap 42.2 show 42.2 p95 18ms max 31ms drop 0 cpu 0.16</div>
+                <div><span class="t">19:11:22.907</span> <b>[设置]</b> 预览窗尺寸 50% → 446×792 · 已保存</div>
+                <div><span class="t">19:12:40.118</span> <b>[测试]</b> 基准测试开始 · 60 秒 · 采样 1 秒</div>
+                <div><span class="t">19:13:40.204</span> <b>[测试]</b> 完成 · p95 18ms · 丢帧 0 · 通过</div>
+                <div><span class="t">19:14:02.551</span> <b>[报告]</b> 写入 reports/2026-10-22-1812.md</div>
+              </div>
+            </div>
+              <div style="display:flex;align-items:center;gap:10px;margin-top:6px;border-top:1px solid var(--line);padding-top:7px">
+                <span class="muted" style="font-size:11px">仅显示最近 200 行 · 完整日志与诊断包在 %LOCALAPPDATA%\Glimpse\logs</span>
+                <span style="flex:1"></span>
+                <button class="btn quiet sm">复制诊断摘要</button>
+              </div>
+          </section>
+        </div>
+
+      </div>
+    </main>
+
+    <!-- 右侧栏 -->
+    <aside class="aside" :class="{'open':drawer}">
+      <section class="block card">
+        <div class="block-head">
+          <div class="live-head" style="gap:7px">
+            <span class="dot" :class="live?'live':(switching?'warn':'err')"></span>
+            <span class="t" x-text="live?'实时画面':(switching?'切换中':'无画面')"></span>
+          </div>
+          <div class="grow"></div>
+          <button class="btn quiet sm drawer-close" @click="drawer=false">收起</button>
+          <span class="run-route">446×792</span>
+        </div>
+        <div class="block-body" style="display:flex;flex-direction:column">
+          <div class="thumb-wrap">
+            <div class="thumb" :class="{dead:!live}">
+              <span class="scan" x-show="live"></span>
+              <span class="ticks"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></span>
+              <span class="t-tag"><i></i><span x-text="live?'实时':(switching?'切换中':'无信号')"></span></span>
+              <div class="switch-mask" x-show="switching" x-cloak><span>正在切换<br><em>保留最后一帧</em></span></div>
+              <span class="t-dim">1080×1920</span>
+            </div>
+          </div>
+          <div class="meters">
+            <div class="meter" title="cap"><div class="k">捕获帧率</div><div class="v"><span x-text="fmt('42.3')"></span><small>fps</small></div></div>
+            <div class="meter" title="show"><div class="k">呈现帧率</div><div class="v"><span x-text="fmt('42.0')"></span><small>fps</small></div></div>
+            <div class="meter" title="age p95"><div class="k">回调年龄 p95</div><div class="v"><span x-text="fmt('15')"></span><small>ms</small></div></div>
+            <div class="meter" title="present p95"><div class="k">端到端 p95</div><div class="v"><span x-text="fmt('18')"></span><small>ms</small></div></div>
+            <div class="meter" title="drop"><div class="k">丢帧</div><div class="v"><span x-text="live?'0':'—'"></span></div></div>
+          </div>
+          <div class="meter-note">回调年龄 = 采集 → 回调；端到端 = 采集 → 呈现，必 ≥ 回调年龄</div>
+          <div class="spark">
+            <div class="cap"><span>最近 60 秒延迟</span><span class="num">阈值 20 ms</span></div>
+            <svg width="100%" height="56" viewBox="0 0 274 56" preserveAspectRatio="none">
+              <line x1="0" y1="18" x2="274" y2="18" stroke="#3A4048" stroke-width="1" stroke-dasharray="3 4"/>
+              <polyline :points="live ? '0,34 14,30 28,33 42,28 56,31 70,26 84,29 98,24 112,30 126,27 140,22 154,26 168,21 182,25 196,20 210,24 224,18 238,22 252,19 274,21' : '0,40 14,40 28,40 42,40 56,40 70,40 84,40 98,40 112,40 126,40 140,40 154,40 168,40 182,40 196,40 210,40 224,40 238,40 252,40 274,40'"
+                fill="none" :stroke="live ? '#F2A93B' : '#3A4048'" stroke-width="1.4"/>
+            </svg>
+          </div>
+        </div>
+      </section>
+
+      <section class="block env">
+        <div class="block-head"><span class="block-title">设备与环境</span></div>
+        <div class="block-body">
+          <div class="env-row"><span>适配器</span><span>RTX 4070 Laptop</span></div>
+          <div class="env-row"><span>合成路径</span><span>DXGI 翻转 + DComp</span></div>
+          <div class="env-row"><span>显存读回</span><span style="color:var(--ok)">0 次</span></div>
+          <div class="env-row"><span>跨屏缩放</span><span>150%</span></div>
+          <div class="env-row"><span>单实例</span><span>已持有</span></div>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <footer class="statusbar">
+    <span>日志 %LOCALAPPDATA%\Glimpse\logs\glimpse.log</span>
+    <span class="grow"></span>
+    <span class="hint"><span class="kbd">Ctrl</span><span class="kbd">Alt</span><span class="kbd">P</span> 穿透</span>
+    <span class="hint"><span class="kbd">Ctrl</span><span class="kbd">Alt</span><span class="kbd">Q</span> 退出</span>
+    <span>v0.0.2</span>
+  </footer>
+</div>
+</body>
+</html>
