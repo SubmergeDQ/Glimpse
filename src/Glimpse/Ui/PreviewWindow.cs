@@ -103,6 +103,21 @@ internal sealed class PreviewWindow : Form
 
     public void AttachHost(IPreviewHost host) => _host = host;
 
+    /// <summary>
+    /// 重新应用置顶。WinForms 在构造函数里设置的 TopMost 可能不会落到
+    /// WS_EX_TOPMOST 上，显示之后重新赋值一次才会真正生效。
+    /// </summary>
+    public void ReassertTopMost()
+    {
+        if (!TopMost)
+        {
+            return;
+        }
+
+        TopMost = false;
+        TopMost = true;
+    }
+
     /// <summary>系统显示配置变化（插拔、分辨率或缩放调整），由组合根重新枚举并收敛。</summary>
     public event Action? DisplayChanged;
 

@@ -109,6 +109,7 @@ internal static class CompositionRoot
         var captureLatency = new LatencyMonitor();
         var presentLatency = new LatencyMonitor();
         var liveStats = new LiveStatsChannel();
+        var panelStatus = new PanelStatusChannel();
         var reporter = new StatsReporter(stats, captureLatency, presentLatency, log, liveStats);
         var benchmark = new BenchmarkRunner(stats, captureLatency, presentLatency);
 
@@ -148,6 +149,7 @@ internal static class CompositionRoot
             // 先让 WinForms 完成首次布局，再按物理像素覆盖位置与尺寸，
             // 避免 Show 时的默认布局覆盖 SetWindowPos 的结果。
             previewWindow.Show();
+            previewWindow.ReassertTopMost();
 
             IntPtr windowHandle = previewWindow.Handle;
             (int x, int y, int width, int height) = ResolvePreviewBounds(
@@ -157,8 +159,8 @@ internal static class CompositionRoot
                 monitors);
             WindowPlacement.Place(windowHandle, x, y, width, height);
 
-            // WinForms 的 TopMost 属性有时不会落到 WS_EX_TOPMOST 上，这里显式置顶一次
-            WindowPlacement.BringToFront(windowHandle);
+            // 显示之后再应用一次置顶，构造期设置的 TopMost 不会落到 WS_EX_TOPMOST
+            previewWindow.ReassertTopMost();
             log.WriteLine(
                 $"[窗口] 位置 ({x},{y}) {width}x{height}，置顶={WindowPlacement.IsTopMost(windowHandle)}");
 
@@ -198,12 +200,6 @@ internal static class CompositionRoot
                 statsOverlay.Show();
                 PositionOverlay();
                 WindowCaptureExclusion.Apply(statsOverlay.Handle);
-
-                // 面板正在操作时保持在最上层，避免读数框压住面板
-                if (panel is { Visible: true })
-                {
-                    WindowPlacement.SetTopMost(panel.Handle, true);
-                }
             }
 
             void SetPreviewVisible(bool visible)
@@ -211,13 +207,7 @@ internal static class CompositionRoot
                 if (visible)
                 {
                     previewWindow.Show();
-
-                    // 重新显示时再显式置顶，避免 TopMost 属性未落到原生样式
-                    WindowPlacement.BringToFront(previewWindow.Handle);
-                    if (panel is { Visible: true })
-                    {
-                        WindowPlacement.SetTopMost(panel.Handle, true);
-                    }
+                    previewWindow.ReassertTopMost();
 
                     if (overlayEnabled)
                     {
@@ -416,6 +406,7 @@ internal static class CompositionRoot
                         version,
                         log.LogFilePath ?? string.Empty,
                         liveStats,
+                        panelStatus,
                         () => sourceMonitor,
                         () => previewMonitor,
                         () => monitors,
@@ -446,8 +437,7 @@ internal static class CompositionRoot
                     panel.WindowState = FormWindowState.Normal;
                 }
 
-                // 预览窗常驻置顶，面板自身也临时置顶，激活后位于预览窗之上
-                WindowPlacement.SetTopMost(panel.Handle, true);
+                // 面板不参与置顶：预览窗常驻最上层，避免面板把预览画面整块盖住
                 panel.Activate();
             }
 
@@ -481,11 +471,19 @@ internal static class CompositionRoot
 
             bool SwitchSource(MonitorDescriptor monitor)
             {
+                bool isCurrent = monitor.Index == sourceMonitor.Index;
+
+                if (!isCurrent)
+                {
+                    panelStatus.Publish(PanelStatus.Switching($"正在切换到 #{monitor.Index}…"));
+                }
+
                 if (!activeSession.TrySwitch(monitor, out string? switchError))
                 {
                     if (switchError is not null)
                     {
                         log.WriteLine($"[切换] 失败，保留原会话：{switchError}");
+                        panelStatus.Publish(PanelStatus.Error("切换失败，已保留原画面", switchError));
                         MessageBox.Show(
                             $"切换到显示器 #{monitor.Index} 失败：{switchError}",
                             "Glimpse",
@@ -495,6 +493,7 @@ internal static class CompositionRoot
                     }
 
                     // 目标就是当前捕获源，无需切换
+                    panelStatus.Publish(OkStatus());
                     return true;
                 }
 
@@ -533,8 +532,12 @@ internal static class CompositionRoot
 
                 tray?.SetStatusText($"捕获 #{monitor.Index} · 预览 #{previewMonitor.Index}");
                 log.WriteLine($"[切换] 已切换到显示器 #{monitor.Index}，窗口 {nextWidth}x{nextHeight}");
+                panelStatus.Publish(OkStatus());
                 return true;
             }
+
+            PanelStatus OkStatus() =>
+                PanelStatus.Ok($"正在监看 #{sourceMonitor.Index} · 预览 #{previewMonitor.Index}");
 
             void SwitchPreview(MonitorDescriptor monitor)
             {
@@ -648,6 +651,7 @@ internal static class CompositionRoot
             void SelectPreview(MonitorDescriptor monitor)
             {
                 MonitorDescriptor previousPreview = previewMonitor;
+                panelStatus.Publish(PanelStatus.Switching($"正在把预览移到 #{monitor.Index}…"));
 
                 if (monitor.Index == sourceMonitor.Index)
                 {
@@ -658,12 +662,14 @@ internal static class CompositionRoot
                 }
 
                 SwitchPreview(monitor);
+                panelStatus.Publish(OkStatus());
             }
 
             void SwapDirection()
             {
                 MonitorDescriptor previousSource = sourceMonitor;
                 MonitorDescriptor previousPreview = previewMonitor;
+                panelStatus.Publish(PanelStatus.Switching("正在交换源与输出…"));
 
                 if (!SwitchSource(previousPreview))
                 {
@@ -671,6 +677,7 @@ internal static class CompositionRoot
                 }
 
                 SwitchPreview(previousSource);
+                panelStatus.Publish(OkStatus());
             }
 
             // 设备丢失后由健康检查触发：停掉整条链路，重建设备、采集会话与呈现器
@@ -683,6 +690,8 @@ internal static class CompositionRoot
 
                 recovering = true;
                 recoverAttempts++;
+                panelStatus.Publish(PanelStatus.Switching(
+                    recoverAttempts == 1 ? "设备丢失，正在重建…" : $"设备仍在恢复（第 {recoverAttempts} 次）…"));
 
                 try
                 {
@@ -740,10 +749,12 @@ internal static class CompositionRoot
                     }
 
                     log.WriteLine("[恢复] D3D 栈重建完成");
+                    panelStatus.Publish(OkStatus());
                 }
                 catch (Exception ex)
                 {
                     log.WriteLine($"[恢复] 重建失败：{ex}");
+                    panelStatus.Publish(PanelStatus.Error("重建失败，正在退避重试", ex.Message));
 
                     if (healthTimer is not null)
                     {
@@ -785,6 +796,9 @@ internal static class CompositionRoot
                     log.WriteLine(
                         $"[热插拔] 源屏 {sourceMonitor.DeviceName} 已断开，等待用户从托盘选择新源");
                     tray?.SetStatusText($"源屏已断开 · 预览 #{previewMonitor.Index}");
+                    panelStatus.Publish(PanelStatus.Error(
+                        "源屏已断开",
+                        "最后一帧已保留；接回屏幕或重新选择捕获源即可恢复"));
                 }
                 else
                 {
@@ -815,6 +829,7 @@ internal static class CompositionRoot
                 WindowPlacement.Move(previewWindow.Handle, nextX, nextY, nextWidth, nextHeight);
 
                 tray?.SetStatusText($"捕获 #{sourceMonitor.Index} · 预览 #{previewMonitor.Index}");
+                panelStatus.Publish(OkStatus());
             }
 
             // WM_DISPLAYCHANGE 会连续到达多次，等显示配置稳定后再处理
@@ -890,6 +905,8 @@ internal static class CompositionRoot
                 exiting = true;
                 previewWindow.Close();
             }
+
+            panelStatus.Publish(OkStatus());
 
             if (options.ShowPanel && !exiting)
             {

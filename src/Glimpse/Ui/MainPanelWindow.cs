@@ -119,6 +119,7 @@ internal sealed class MainPanelWindow : Form
     }
 
     private readonly LiveStatsChannel _stats;
+    private readonly PanelStatusChannel _statusChannel;
     private readonly string _version;
     private readonly string _logFilePath;
     private readonly Func<MonitorDescriptor> _sourceMonitor;
@@ -145,6 +146,7 @@ internal sealed class MainPanelWindow : Form
     private readonly Action _openLogDirectory;
     private readonly Action _runBenchmark;
     private readonly System.Windows.Forms.Timer _timer;
+    private readonly System.Windows.Forms.Timer _statusTimer;
     private readonly List<double> _p95History = new(60);
 
     private PanelView _view = PanelView.Monitor;
@@ -158,6 +160,11 @@ internal sealed class MainPanelWindow : Form
     private PanelAction _pressed = PanelAction.None;
     private CardKey _hoverCard = CardKey.None;
     private CardKey _pressedCard = CardKey.None;
+    private const int StatusMinVisibleMs = 1600;
+
+    private PanelStatus _status = PanelStatus.Ok("就绪");
+    private DateTime _statusShownAt = DateTime.Now;
+    private bool _switching;
     private BenchmarkResult? _lastBenchmark;
     private string? _lastReportPath;
     private bool _benchmarkRunning;
@@ -168,6 +175,7 @@ internal sealed class MainPanelWindow : Form
         string version,
         string logFilePath,
         LiveStatsChannel stats,
+        PanelStatusChannel statusChannel,
         Func<MonitorDescriptor> sourceMonitor,
         Func<MonitorDescriptor> previewMonitor,
         Func<IReadOnlyList<MonitorDescriptor>> monitors,
@@ -192,6 +200,7 @@ internal sealed class MainPanelWindow : Form
         Action runBenchmark)
     {
         _stats = stats;
+        _statusChannel = statusChannel;
         _version = version;
         _logFilePath = logFilePath;
         _sourceMonitor = sourceMonitor;
@@ -235,6 +244,10 @@ internal sealed class MainPanelWindow : Form
         _timer = new System.Windows.Forms.Timer { Interval = 1000 };
         _timer.Tick += (_, _) => RefreshStats();
 
+        // 链路状态单独快轮询：设备恢复等过渡可能远短于 1 秒的读数节拍
+        _statusTimer = new System.Windows.Forms.Timer { Interval = 250 };
+        _statusTimer.Tick += (_, _) => SyncStatus();
+
         _benchmarkTimer = new System.Windows.Forms.Timer { Interval = 400 };
         _benchmarkTimer.Tick += (_, _) => Invalidate();
     }
@@ -272,9 +285,17 @@ internal sealed class MainPanelWindow : Form
         MainRect.Width - S(36),
         S(44));
 
+    private bool ShowBanner => _status.Kind != PanelStatusKind.Ok;
+
+    private Rectangle BannerRect => ShowBanner
+        ? new Rectangle(MainRect.X + S(18), RunBarRect.Bottom + S(8), MainRect.Width - S(36), S(36))
+        : Rectangle.Empty;
+
+    private int ContentTop => (ShowBanner ? BannerRect.Bottom : RunBarRect.Bottom) + S(12);
+
     private Rectangle TopologyRect => new(
         MainRect.X + S(18),
-        RunBarRect.Bottom + S(12),
+        ContentTop,
         MainRect.Width - S(36),
         S(BlockHeadHeight + 194));
 
@@ -393,11 +414,34 @@ internal sealed class MainPanelWindow : Form
         base.OnVisibleChanged(e);
 
         _timer.Enabled = Visible;
+        _statusTimer.Enabled = Visible;
         _benchmarkTimer.Enabled = Visible && _benchmarkRunning;
         if (Visible)
         {
             RefreshStats();
         }
+    }
+
+    private void SyncStatus()
+    {
+        PanelStatus status = _statusChannel.Read();
+        if (status == _status)
+        {
+            return;
+        }
+
+        // 过渡状态至少停留一段时间再收起，否则设备快速恢复时用户根本看不到发生过什么
+        if (status.Kind == PanelStatusKind.Ok
+            && _status.Kind != PanelStatusKind.Ok
+            && (DateTime.Now - _statusShownAt).TotalMilliseconds < StatusMinVisibleMs)
+        {
+            return;
+        }
+
+        _status = status;
+        _statusShownAt = DateTime.Now;
+        _switching = status.Kind == PanelStatusKind.Switching;
+        Invalidate();
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -701,7 +745,7 @@ internal sealed class MainPanelWindow : Form
             }
         }
 
-        if (_view == PanelView.Monitor && SwapButtonRect.Contains(point))
+        if (_view == PanelView.Monitor && !_switching && SwapButtonRect.Contains(point))
         {
             return PanelAction.SwapDirection;
         }
@@ -723,9 +767,13 @@ internal sealed class MainPanelWindow : Form
     {
         switch (action)
         {
+            // 关闭收进托盘；最小化与普通窗口一致，落在任务栏
             case PanelAction.Close:
-            case PanelAction.Minimize:
                 Hide();
+                break;
+
+            case PanelAction.Minimize:
+                WindowState = FormWindowState.Minimized;
                 break;
 
             case PanelAction.Maximize:
@@ -984,7 +1032,8 @@ internal sealed class MainPanelWindow : Form
 
     private CardHit? HitCard(Point point)
     {
-        if (_view != PanelView.Monitor)
+        // 切换过程中忽略卡片点击，避免在上一次切换未收敛时叠加新请求
+        if (_view != PanelView.Monitor || _switching)
         {
             return null;
         }
@@ -1235,29 +1284,64 @@ internal sealed class MainPanelWindow : Form
     {
         Rectangle bar = RunBarRect;
 
+        string headline;
+        Color headlineColor;
+        Color dotColor;
+
+        if (_status.Kind == PanelStatusKind.Error)
+        {
+            headline = _status.Headline;
+            headlineColor = PanelTheme.Error;
+            dotColor = PanelTheme.Error;
+        }
+        else if (_status.Kind == PanelStatusKind.Switching)
+        {
+            headline = _status.Headline;
+            headlineColor = PanelTheme.Amber;
+            dotColor = PanelTheme.Amber;
+        }
+        else if (_live)
+        {
+            headline = "正在监看";
+            headlineColor = PanelTheme.Foreground;
+            dotColor = PanelTheme.Ok;
+        }
+        else if (_latest.LastFrameAt is not null)
+        {
+            headline = "无新帧";
+            headlineColor = PanelTheme.Warn;
+            dotColor = PanelTheme.Warn;
+        }
+        else
+        {
+            headline = "源屏无画面";
+            headlineColor = PanelTheme.Error;
+            dotColor = PanelTheme.Error;
+        }
+
         int dot = S(7);
-        using (var brush = new SolidBrush(_live ? PanelTheme.Ok : PanelTheme.Error))
+        using (var brush = new SolidBrush(dotColor))
         {
             graphics.FillEllipse(brush, bar.X, bar.Y + ((bar.Height - dot) / 2), dot, dot);
         }
 
         int textX = bar.X + S(17);
+        int headlineWidth = S(178);
         DrawText(
             graphics,
-            _live ? "正在监看" : "源屏无画面",
+            headline,
             PanelTheme.BodyStrong,
-            _live ? PanelTheme.Foreground : PanelTheme.Error,
-            new Rectangle(textX, bar.Y, S(120), bar.Height),
+            headlineColor,
+            new Rectangle(textX, bar.Y, headlineWidth, bar.Height),
             StringAlignment.Near,
-            StringAlignment.Center,
-            ellipsis: false);
+            StringAlignment.Center);
 
         MonitorDescriptor source = _sourceMonitor();
         MonitorDescriptor preview = _previewMonitor();
         string route =
             $"捕获 #{source.Index} {source.Width}×{source.Height} → 预览 #{preview.Index} {preview.Width}×{preview.Height}";
 
-        int routeX = textX + S(130);
+        int routeX = textX + headlineWidth + S(10);
         int routeWidth = Math.Max(0, bar.Right - routeX - S(110) - (Wide ? 0 : S(74)));
         DrawText(
             graphics,
@@ -1280,6 +1364,76 @@ internal sealed class MainPanelWindow : Form
         DrawPill(graphics, pill, excluded ? "捕获隐身" : "未隐身", excluded ? PanelTheme.Ok : PanelTheme.Warn);
 
         DrawLine(graphics, bar.X, bar.Bottom, bar.Right - 1, bar.Bottom, PanelTheme.Line);
+        DrawStatusBanner(graphics);
+    }
+
+    private void DrawStatusBanner(Graphics graphics)
+    {
+        if (!ShowBanner)
+        {
+            return;
+        }
+
+        Rectangle banner = BannerRect;
+        Color accent = _status.Kind == PanelStatusKind.Error ? PanelTheme.Error : PanelTheme.Amber;
+
+        using (var path = Rounded(banner, S(2)))
+        {
+            using (var fill = new SolidBrush(PanelTheme.Surface))
+            {
+                graphics.FillPath(fill, path);
+            }
+
+            using var pen = new Pen(Color.FromArgb(110, accent), PenWidth(1));
+            graphics.DrawPath(pen, path);
+        }
+
+        using (var barBrush = new SolidBrush(accent))
+        {
+            graphics.FillRectangle(barBrush, banner.X + 1, banner.Y + 1, S(3), banner.Height - 2);
+        }
+
+        int dot = S(6);
+        using (var dotBrush = new SolidBrush(accent))
+        {
+            graphics.FillEllipse(dotBrush, banner.X + S(12), banner.Y + ((banner.Height - dot) / 2), dot, dot);
+        }
+
+        int textX = banner.X + S(26);
+        int detailWidth = banner.Width - S(38);
+        bool hasDetail = !string.IsNullOrWhiteSpace(_status.Detail);
+
+        DrawText(
+            graphics,
+            _status.Headline,
+            PanelTheme.BodyStrong,
+            accent,
+            new Rectangle(textX, banner.Y, S(238), banner.Height),
+            StringAlignment.Near,
+            StringAlignment.Center);
+
+        if (hasDetail)
+        {
+            DrawText(
+                graphics,
+                _status.Detail!,
+                PanelTheme.Small,
+                PanelTheme.Foreground3,
+                new Rectangle(textX + S(244), banner.Y, Math.Max(0, detailWidth - S(244)), banner.Height),
+                StringAlignment.Near,
+                StringAlignment.Center);
+        }
+
+        int seconds = (int)Math.Max(0, (DateTime.Now - _status.UpdatedAt).TotalSeconds);
+        DrawText(
+            graphics,
+            $"{seconds}s",
+            PanelTheme.MonoSmall,
+            PanelTheme.Foreground3,
+            new Rectangle(banner.Right - S(44), banner.Y, S(34), banner.Height),
+            StringAlignment.Far,
+            StringAlignment.Center,
+            ellipsis: false);
     }
 
     private void DrawTopology(Graphics graphics)
@@ -1540,7 +1694,7 @@ internal sealed class MainPanelWindow : Form
         {
             bool isSelected = IsSameMonitor(monitor, selected);
             bool hovered = _hoverCard == new CardKey(monitor.Index, sourceSide);
-            DrawMonitorCard(graphics, bounds, monitor, isSelected, hovered);
+            DrawMonitorCard(graphics, bounds, monitor, isSelected, hovered, _switching);
         }
 
         if (sourceSide)
@@ -1765,16 +1919,18 @@ internal sealed class MainPanelWindow : Form
         Rectangle bounds,
         MonitorDescriptor monitor,
         bool selected,
-        bool hovered)
+        bool hovered,
+        bool dimmed)
     {
         using var path = Rounded(bounds, S(2));
-        using (var brush = new SolidBrush(selected || hovered ? PanelTheme.Surface2 : PanelTheme.Surface))
+        using (var brush = new SolidBrush(!dimmed && (selected || hovered) ? PanelTheme.Surface2 : PanelTheme.Surface))
         {
             graphics.FillPath(brush, path);
         }
 
-        Color border = selected
-            ? PanelTheme.Amber
+        Color border = dimmed
+            ? PanelTheme.Line
+            : selected ? PanelTheme.Amber
             : hovered ? PanelTheme.Line3 : PanelTheme.Line;
         using (var pen = new Pen(border, PenWidth(1)))
         {
@@ -1795,7 +1951,7 @@ internal sealed class MainPanelWindow : Form
             graphics.FillRectangle(brush, thumb);
         }
 
-        using (var pen = new Pen(selected ? PanelTheme.Amber : PanelTheme.Line3, PenWidth(1)))
+        using (var pen = new Pen(dimmed ? PanelTheme.Line2 : selected ? PanelTheme.Amber : PanelTheme.Line3, PenWidth(1)))
         {
             graphics.DrawRectangle(pen, thumb);
         }
@@ -2797,14 +2953,15 @@ internal sealed class MainPanelWindow : Form
 
     private void DrawQuietButton(Graphics graphics, Rectangle rect, string text, PanelAction action)
     {
-        bool hover = _hover == action;
+        bool disabled = _switching && action == PanelAction.SwapDirection;
+        bool hover = !disabled && _hover == action;
         if (hover)
         {
             using var brush = new SolidBrush(PanelTheme.Surface2);
             graphics.FillRectangle(brush, rect);
         }
 
-        using (var pen = new Pen(PanelTheme.Line2, PenWidth(1)))
+        using (var pen = new Pen(disabled ? PanelTheme.Line : PanelTheme.Line2, PenWidth(1)))
         {
             graphics.DrawRectangle(pen, rect.X, rect.Y, rect.Width - 1, rect.Height - 1);
         }
@@ -2813,7 +2970,7 @@ internal sealed class MainPanelWindow : Form
             graphics,
             text,
             PanelTheme.Small,
-            hover ? PanelTheme.Foreground : PanelTheme.Foreground3,
+            disabled ? PanelTheme.Line3 : hover ? PanelTheme.Foreground : PanelTheme.Foreground3,
             rect,
             StringAlignment.Center,
             StringAlignment.Center,
@@ -2970,6 +3127,7 @@ internal sealed class MainPanelWindow : Form
         if (disposing)
         {
             _timer.Dispose();
+            _statusTimer.Dispose();
             _benchmarkTimer.Dispose();
         }
 

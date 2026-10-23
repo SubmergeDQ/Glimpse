@@ -30,7 +30,6 @@ internal static class WindowInterop
     private const uint SwpShowWindow = 0x0040;
 
     private static readonly IntPtr HwndTopMost = new(-1);
-    private static readonly IntPtr HwndNoTopMost = new(-2);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeRect
@@ -84,24 +83,6 @@ internal static class WindowInterop
     [DllImport("user32.dll", EntryPoint = "UnregisterHotKey", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool UnregisterHotKey(IntPtr hwnd, int id);
-
-    /// <summary>把窗口提到最前，不抢焦点。</summary>
-    public static void BringToFront(IntPtr hwnd) =>
-        SetWindowPos(hwnd, HwndTopMost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate | SwpShowWindow);
-
-    /// <summary>
-    /// 直接切换 WS_EX_TOPMOST。WinForms 的 TopMost 属性在部分合成窗口上不会落到原生样式，
-    /// 面板等场景必须用这里显式控制。
-    /// </summary>
-    public static void SetTopMost(IntPtr hwnd, bool topMost) =>
-        SetWindowPos(
-            hwnd,
-            topMost ? HwndTopMost : HwndNoTopMost,
-            0,
-            0,
-            0,
-            0,
-            SwpNoMove | SwpNoSize | SwpNoActivate);
 
     /// <summary>
     /// 切换点击穿透。改完扩展样式必须带 SWP_FRAMECHANGED 才会生效。

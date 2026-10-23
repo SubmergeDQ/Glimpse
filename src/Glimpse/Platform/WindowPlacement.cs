@@ -24,8 +24,4 @@ internal static class WindowPlacement
     public static int GetDpi(IntPtr hwnd) => WindowInterop.GetDpi(hwnd);
 
     public static bool IsTopMost(IntPtr hwnd) => WindowInterop.IsTopMost(hwnd);
-
-    public static void BringToFront(IntPtr hwnd) => WindowInterop.BringToFront(hwnd);
-
-    public static void SetTopMost(IntPtr hwnd, bool topMost) => WindowInterop.SetTopMost(hwnd, topMost);
 }
