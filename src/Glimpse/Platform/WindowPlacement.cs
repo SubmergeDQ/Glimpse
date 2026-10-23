@@ -10,6 +10,10 @@ internal static class WindowPlacement
     public static void Place(IntPtr hwnd, int x, int y, int width, int height) =>
         WindowInterop.PlaceWindow(hwnd, x, y, width, height);
 
+    /// <summary>只移动与缩放，不改变 Z 序或置顶状态。</summary>
+    public static void Move(IntPtr hwnd, int x, int y, int width, int height) =>
+        WindowInterop.MoveWindow(hwnd, x, y, width, height);
+
     public static (int Width, int Height) GetClientSize(IntPtr hwnd) =>
         WindowInterop.GetClientSize(hwnd);
 

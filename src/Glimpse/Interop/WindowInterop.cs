@@ -138,6 +138,15 @@ internal static class WindowInterop
         SetWindowPos(hwnd, HwndTopMost, x, y, width, height, SwpNoActivate);
     }
 
+    /// <summary>
+    /// 只移动与缩放，不改变 Z 序。用于换源/换屏等运行期调整，
+    /// 避免预览窗被抬到正在操作的面板之上。
+    /// </summary>
+    public static void MoveWindow(IntPtr hwnd, int x, int y, int width, int height)
+    {
+        SetWindowPos(hwnd, IntPtr.Zero, x, y, width, height, SwpNoActivate | SwpNoZOrder);
+    }
+
     /// <summary>客户端区尺寸，单位物理像素。</summary>
     public static (int Width, int Height) GetClientSize(IntPtr hwnd)
     {

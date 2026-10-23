@@ -28,7 +28,7 @@ internal static class PanelTheme
     public static readonly Font Small = CreateSans(8.25f, FontStyle.Regular);
     public static readonly Font Brand = CreateSans(10.5f, FontStyle.Bold);
     public static readonly Font MonoSmall = CreateMono(8.25f);
-    public static readonly Font MonoValue = CreateMono(12f);
+    public static readonly Font MonoValue = CreateMono(14.25f);
 
     private static HashSet<string> LoadFamilies()
     {

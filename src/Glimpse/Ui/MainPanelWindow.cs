@@ -65,7 +65,17 @@ internal sealed class MainPanelWindow : Form
         OpenLog,
         ToggleDrawer,
         RunBenchmark,
+        SwapDirection,
     }
+
+    private readonly record struct CardKey(int Index, bool Source)
+    {
+        public static CardKey None => new(-1, false);
+
+        public bool IsNone => Index < 0;
+    }
+
+    private readonly record struct CardHit(CardKey Key, MonitorDescriptor Monitor);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeRect
@@ -98,6 +108,10 @@ internal sealed class MainPanelWindow : Form
     private readonly string _logFilePath;
     private readonly Func<MonitorDescriptor> _sourceMonitor;
     private readonly Func<MonitorDescriptor> _previewMonitor;
+    private readonly Func<IReadOnlyList<MonitorDescriptor>> _monitors;
+    private readonly Action<MonitorDescriptor> _selectSource;
+    private readonly Action<MonitorDescriptor> _selectPreview;
+    private readonly Action _swapDirection;
     private readonly Func<string> _adapterName;
     private readonly Func<bool> _captureExcluded;
     private readonly Func<(int Width, int Height)> _previewSize;
@@ -115,6 +129,8 @@ internal sealed class MainPanelWindow : Form
     private int _dpi;
     private PanelAction _hover = PanelAction.None;
     private PanelAction _pressed = PanelAction.None;
+    private CardKey _hoverCard = CardKey.None;
+    private CardKey _pressedCard = CardKey.None;
 
     public MainPanelWindow(
         string version,
@@ -122,6 +138,10 @@ internal sealed class MainPanelWindow : Form
         LiveStatsChannel stats,
         Func<MonitorDescriptor> sourceMonitor,
         Func<MonitorDescriptor> previewMonitor,
+        Func<IReadOnlyList<MonitorDescriptor>> monitors,
+        Action<MonitorDescriptor> selectSource,
+        Action<MonitorDescriptor> selectPreview,
+        Action swapDirection,
         Func<string> adapterName,
         Func<bool> captureExcluded,
         Func<(int Width, int Height)> previewSize,
@@ -133,6 +153,10 @@ internal sealed class MainPanelWindow : Form
         _logFilePath = logFilePath;
         _sourceMonitor = sourceMonitor;
         _previewMonitor = previewMonitor;
+        _monitors = monitors;
+        _selectSource = selectSource;
+        _selectPreview = selectPreview;
+        _swapDirection = swapDirection;
         _adapterName = adapterName;
         _captureExcluded = captureExcluded;
         _previewSize = previewSize;
@@ -194,11 +218,29 @@ internal sealed class MainPanelWindow : Form
         MainRect.Width - S(36),
         S(BlockHeadHeight + 194));
 
-    private Rectangle BenchRect => new(
+    private Rectangle SourceBlockRect => new(
         MainRect.X + S(18),
         TopologyRect.Bottom + S(12),
+        (MainRect.Width - S(36) - S(12)) / 2,
+        S(210));
+
+    private Rectangle PreviewBlockRect => new(
+        SourceBlockRect.Right + S(12),
+        SourceBlockRect.Y,
+        SourceBlockRect.Width,
+        SourceBlockRect.Height);
+
+    private Rectangle BenchRect => new(
+        MainRect.X + S(18),
+        SourceBlockRect.Bottom + S(12),
         MainRect.Width - S(36),
         S(90));
+
+    private Rectangle SwapButtonRect => new(
+        TopologyRect.Right - S(12) - S(92),
+        TopologyRect.Y + ((S(BlockHeadHeight) - S(24)) / 2),
+        S(92),
+        S(24));
 
     private Rectangle BenchRunButtonRect => new(
         BenchRect.Right - S(12) - S(156),
@@ -300,27 +342,39 @@ internal sealed class MainPanelWindow : Form
     protected override void OnMouseDown(MouseEventArgs e)
     {
         _pressed = HitAction(e.Location);
+        _pressedCard = HitCard(e.Location)?.Key ?? CardKey.None;
         base.OnMouseDown(e);
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
     {
-        PanelAction action = HitAction(e.Location);
-        if (action != PanelAction.None && action == _pressed)
+        CardHit? hit = HitCard(e.Location);
+        if (hit is { } card && !_pressedCard.IsNone && card.Key == _pressedCard)
         {
-            Execute(action);
+            SelectCard(card);
+        }
+        else
+        {
+            PanelAction action = HitAction(e.Location);
+            if (action != PanelAction.None && action == _pressed)
+            {
+                Execute(action);
+            }
         }
 
         _pressed = PanelAction.None;
+        _pressedCard = CardKey.None;
         base.OnMouseUp(e);
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
         PanelAction hover = HitAction(e.Location);
-        if (hover != _hover)
+        CardKey hoverCard = HitCard(e.Location)?.Key ?? CardKey.None;
+        if (hover != _hover || hoverCard != _hoverCard)
         {
             _hover = hover;
+            _hoverCard = hoverCard;
             Invalidate();
         }
 
@@ -329,9 +383,10 @@ internal sealed class MainPanelWindow : Form
 
     protected override void OnMouseLeave(EventArgs e)
     {
-        if (_hover != PanelAction.None)
+        if (_hover != PanelAction.None || !_hoverCard.IsNone)
         {
             _hover = PanelAction.None;
+            _hoverCard = CardKey.None;
             Invalidate();
         }
 
@@ -499,6 +554,11 @@ internal sealed class MainPanelWindow : Form
             return PanelAction.RunBenchmark;
         }
 
+        if (_view == PanelView.Monitor && SwapButtonRect.Contains(point))
+        {
+            return PanelAction.SwapDirection;
+        }
+
         if (!Wide && DrawerButtonRect.Contains(point))
         {
             return PanelAction.ToggleDrawer;
@@ -553,12 +613,90 @@ internal sealed class MainPanelWindow : Form
             case PanelAction.RunBenchmark:
                 _runBenchmark();
                 break;
+
+            case PanelAction.SwapDirection:
+                _swapDirection();
+                break;
         }
 
         _hover = PanelAction.None;
         _pressed = PanelAction.None;
         Invalidate();
     }
+
+    private void SelectCard(CardHit card)
+    {
+        if (card.Key.Source)
+        {
+            _selectSource(card.Monitor);
+        }
+        else
+        {
+            _selectPreview(card.Monitor);
+        }
+
+        RefreshStats();
+    }
+
+    private CardHit? HitCard(Point point)
+    {
+        if (_view != PanelView.Monitor)
+        {
+            return null;
+        }
+
+        foreach ((MonitorDescriptor monitor, Rectangle bounds) in LayoutCards(SourceBlockRect, sourceSide: true))
+        {
+            if (bounds.Contains(point))
+            {
+                return new CardHit(new CardKey(monitor.Index, true), monitor);
+            }
+        }
+
+        foreach ((MonitorDescriptor monitor, Rectangle bounds) in LayoutCards(PreviewBlockRect, sourceSide: false))
+        {
+            if (bounds.Contains(point))
+            {
+                return new CardHit(new CardKey(monitor.Index, false), monitor);
+            }
+        }
+
+        return null;
+    }
+
+    private List<(MonitorDescriptor Monitor, Rectangle Bounds)> LayoutCards(Rectangle block, bool sourceSide)
+    {
+        var cards = new List<(MonitorDescriptor, Rectangle)>();
+        IReadOnlyList<MonitorDescriptor> monitors = _monitors();
+        MonitorDescriptor selected = sourceSide ? _sourceMonitor() : _previewMonitor();
+
+        var body = new Rectangle(
+            block.X + S(10),
+            block.Y + S(BlockHeadHeight) + S(10),
+            block.Width - S(20),
+            block.Height - S(BlockHeadHeight) - S(20));
+
+        int y = body.Y;
+        foreach (MonitorDescriptor monitor in monitors)
+        {
+            bool isSelected = IsSameMonitor(monitor, selected);
+            int height = S(isSelected ? 56 : 40);
+            if (y + height > body.Bottom)
+            {
+                break;
+            }
+
+            cards.Add((monitor, new Rectangle(body.X, y, body.Width, height)));
+            y += height + S(6);
+        }
+
+        return cards;
+    }
+
+    private static bool IsSameMonitor(MonitorDescriptor left, MonitorDescriptor right) =>
+        left.Index == right.Index
+        || (!string.IsNullOrEmpty(left.DeviceName)
+            && string.Equals(left.DeviceName, right.DeviceName, StringComparison.OrdinalIgnoreCase));
 
     private void DrawTitleBar(Graphics graphics)
     {
@@ -727,8 +865,8 @@ internal sealed class MainPanelWindow : Form
             case PanelView.Monitor:
                 DrawRunBar(graphics);
                 DrawTopology(graphics);
+                DrawMonitorControls(graphics);
                 DrawBenchSummary(graphics);
-                DrawControlsPlaceholder(graphics);
                 break;
 
             case PanelView.Test:
@@ -804,7 +942,8 @@ internal sealed class MainPanelWindow : Form
     {
         Rectangle block = TopologyRect;
         DrawBlock(graphics, block);
-        DrawBlockHead(graphics, block, "投屏链路", "显存零拷贝");
+        DrawBlockHead(graphics, block, "投屏链路", right: null);
+        DrawQuietButton(graphics, SwapButtonRect, "交换方向", PanelAction.SwapDirection);
 
         Rectangle body = new(block.X + 1, block.Y + S(BlockHeadHeight), block.Width - 2, block.Height - S(BlockHeadHeight) - 1);
         DrawGrid(graphics, body, S(28), Color.FromArgb(20, PanelTheme.Line));
@@ -915,6 +1054,8 @@ internal sealed class MainPanelWindow : Form
             graphics.DrawRectangle(pen, frame);
         }
 
+        DrawCornerTicks(graphics, frame, PanelTheme.Line3);
+
         int dot = S(4);
         using (var brush = new SolidBrush(_live ? PanelTheme.Ok : PanelTheme.Error))
         {
@@ -1024,27 +1165,150 @@ internal sealed class MainPanelWindow : Form
             ellipsis: false);
     }
 
-    private void DrawControlsPlaceholder(Graphics graphics)
+    private void DrawMonitorControls(Graphics graphics)
     {
-        int top = BenchRect.Bottom + S(12);
-        int height = MainRect.Bottom - S(14) - top;
-        if (height < S(80))
+        DrawMonitorBlock(graphics, SourceBlockRect, sourceSide: true, "投屏源");
+        DrawMonitorBlock(graphics, PreviewBlockRect, sourceSide: false, "预览输出");
+    }
+
+    private void DrawMonitorBlock(Graphics graphics, Rectangle block, bool sourceSide, string title)
+    {
+        DrawBlock(graphics, block);
+
+        MonitorDescriptor selected = sourceSide ? _sourceMonitor() : _previewMonitor();
+        DrawBlockHead(graphics, block, title, $"#{selected.Index} {ShortDeviceName(selected.DeviceName)}");
+
+        List<(MonitorDescriptor Monitor, Rectangle Bounds)> cards = LayoutCards(block, sourceSide);
+        foreach ((MonitorDescriptor monitor, Rectangle bounds) in cards)
+        {
+            bool isSelected = IsSameMonitor(monitor, selected);
+            bool hovered = _hoverCard == new CardKey(monitor.Index, sourceSide);
+            DrawMonitorCard(graphics, bounds, monitor, isSelected, hovered);
+        }
+
+        int hintTop = block.Bottom - S(26);
+        int cardsBottom = cards.Count > 0 ? cards[^1].Bounds.Bottom : block.Y + S(BlockHeadHeight);
+        if (hintTop - cardsBottom < S(8))
         {
             return;
         }
 
-        var block = new Rectangle(MainRect.X + S(18), top, MainRect.Width - S(36), height);
-        DrawBlock(graphics, block);
-        DrawBlockHead(graphics, block, "选屏与输出控制", right: null);
-
+        DrawLine(graphics, block.X + S(10), hintTop - S(6), block.Right - S(10), hintTop - S(6), PanelTheme.Line);
         DrawText(
             graphics,
-            "下一步接入：显示器卡片、预览输出控制与设置持久化。",
-            PanelTheme.Body,
+            sourceSide
+                ? "同一块屏不能同时作为源与输出；热插拔后自动重新枚举"
+                : "切换输出屏会按源比例移动预览窗，捕获不中断",
+            PanelTheme.Small,
             PanelTheme.Foreground3,
-            new Rectangle(block.X + S(12), block.Y + S(BlockHeadHeight), block.Width - S(24), block.Height - S(BlockHeadHeight)),
-            StringAlignment.Center,
+            new Rectangle(block.X + S(10), hintTop, block.Width - S(20), S(16)),
+            StringAlignment.Near,
             StringAlignment.Center);
+    }
+
+    private void DrawMonitorCard(
+        Graphics graphics,
+        Rectangle bounds,
+        MonitorDescriptor monitor,
+        bool selected,
+        bool hovered)
+    {
+        using var path = Rounded(bounds, S(2));
+        using (var brush = new SolidBrush(selected || hovered ? PanelTheme.Surface2 : PanelTheme.Surface))
+        {
+            graphics.FillPath(brush, path);
+        }
+
+        Color border = selected
+            ? PanelTheme.Amber
+            : hovered ? PanelTheme.Line3 : PanelTheme.Line;
+        using (var pen = new Pen(border, PenWidth(1)))
+        {
+            graphics.DrawPath(pen, path);
+        }
+
+        int thumbHeight = selected ? S(26) : S(18);
+        double aspect = monitor.Width / (double)Math.Max(1, monitor.Height);
+        int thumbWidth = Math.Min(S(34), Math.Max(S(12), (int)Math.Round(thumbHeight * aspect)));
+        var thumb = new Rectangle(
+            bounds.X + S(10),
+            bounds.Y + ((bounds.Height - thumbHeight) / 2),
+            thumbWidth,
+            thumbHeight);
+
+        using (var brush = new SolidBrush(Color.FromArgb(10, 12, 15)))
+        {
+            graphics.FillRectangle(brush, thumb);
+        }
+
+        using (var pen = new Pen(selected ? PanelTheme.Amber : PanelTheme.Line3, PenWidth(1)))
+        {
+            graphics.DrawRectangle(pen, thumb);
+        }
+
+        string name = $"{(monitor.IsPrimary ? "主屏" : "副屏")} · {ShortDeviceName(monitor.DeviceName)}";
+        string resolution = $"{monitor.Width}×{monitor.Height}";
+        int textX = thumb.Right + S(10);
+        int textRight = bounds.Right - S(10);
+
+        if (selected)
+        {
+            DrawText(
+                graphics,
+                name,
+                PanelTheme.Body,
+                PanelTheme.Foreground,
+                new Rectangle(textX, bounds.Y + S(5), Math.Max(0, textRight - textX - S(20)), S(16)),
+                StringAlignment.Near,
+                StringAlignment.Center,
+                ellipsis: false);
+
+            string meta = $"{resolution} · {(monitor.Width < monitor.Height ? "竖屏" : "横屏")}";
+            DrawText(
+                graphics,
+                meta,
+                PanelTheme.MonoSmall,
+                PanelTheme.Foreground3,
+                new Rectangle(textX, bounds.Y + S(24), Math.Max(0, textRight - textX - S(20)), S(14)),
+                StringAlignment.Near,
+                StringAlignment.Center,
+                ellipsis: false);
+
+            DrawCheckMark(
+                graphics,
+                new Rectangle(textRight - S(13), bounds.Y + ((bounds.Height - S(13)) / 2), S(13), S(13)),
+                PanelTheme.Amber);
+        }
+        else
+        {
+            DrawText(
+                graphics,
+                name,
+                PanelTheme.Body,
+                PanelTheme.Foreground2,
+                new Rectangle(textX, bounds.Y, Math.Max(0, textRight - textX - S(74)), bounds.Height),
+                StringAlignment.Near,
+                StringAlignment.Center);
+
+            DrawText(
+                graphics,
+                resolution,
+                PanelTheme.MonoSmall,
+                PanelTheme.Foreground3,
+                new Rectangle(textRight - S(70), bounds.Y, S(70), bounds.Height),
+                StringAlignment.Far,
+                StringAlignment.Center,
+                ellipsis: false);
+        }
+    }
+
+    private void DrawCheckMark(Graphics graphics, Rectangle bounds, Color color)
+    {
+        using var pen = new Pen(color, PenWidth(1.4f));
+        int x = bounds.X;
+        int y = bounds.Y + S(6);
+        graphics.DrawLine(pen, x + S(1), y, x + S(5), y + S(4));
+        graphics.DrawLine(pen, x + S(5), y + S(4), x + S(12), y - S(4));
     }
 
     private void DrawPlaceholder(Graphics graphics, string title, string note)
@@ -1225,6 +1489,8 @@ internal sealed class MainPanelWindow : Form
         {
             graphics.DrawRectangle(pen, thumb);
         }
+
+        DrawCornerTicks(graphics, thumb, PanelTheme.Line3);
 
         int dot = S(4);
         using (var brush = new SolidBrush(_live ? PanelTheme.Ok : PanelTheme.Error))
@@ -1435,15 +1701,100 @@ internal sealed class MainPanelWindow : Form
             StringAlignment.Near,
             StringAlignment.Center);
 
+        int versionWidth = S(48);
+        int versionX = ClientSize.Width - S(14) - versionWidth;
         DrawText(
             graphics,
-            $"Ctrl+Alt+Q 退出    v{_version}",
+            $"v{_version}",
             PanelTheme.MonoSmall,
             PanelTheme.Foreground3,
-            new Rectangle(ClientSize.Width - S(14) - S(280), y, S(280), height),
+            new Rectangle(versionX, y, versionWidth, height),
             StringAlignment.Far,
             StringAlignment.Center,
             ellipsis: false);
+
+        DrawShortcut(graphics, versionX - S(14), y, height, ["Ctrl", "Alt", "Q"], "退出");
+    }
+
+    private void DrawShortcut(Graphics graphics, int right, int y, int height, string[] keys, string label)
+    {
+        int gap = S(3);
+        int padding = S(4);
+        int keyHeight = S(16);
+        int labelWidth = (int)Math.Ceiling(Measure(graphics, label, PanelTheme.MonoSmall).Width);
+
+        var keyWidths = new int[keys.Length];
+        int total = labelWidth + S(6);
+        for (int index = 0; index < keys.Length; index++)
+        {
+            keyWidths[index] = (int)Math.Ceiling(Measure(graphics, keys[index], PanelTheme.Small).Width) + (padding * 2);
+            total += keyWidths[index];
+            if (index > 0)
+            {
+                total += gap;
+            }
+        }
+
+        int x = right - total;
+        int keyY = y + ((height - keyHeight) / 2);
+
+        for (int index = 0; index < keys.Length; index++)
+        {
+            if (index > 0)
+            {
+                x += gap;
+            }
+
+            var key = new Rectangle(x, keyY, keyWidths[index], keyHeight);
+            using (var path = Rounded(key, S(2)))
+            {
+                using var pen = new Pen(PanelTheme.Line2, PenWidth(1));
+                graphics.DrawPath(pen, path);
+            }
+
+            DrawText(
+                graphics,
+                keys[index],
+                PanelTheme.Small,
+                PanelTheme.Foreground3,
+                key,
+                StringAlignment.Center,
+                StringAlignment.Center,
+                ellipsis: false);
+
+            x += keyWidths[index];
+        }
+
+        x += S(6);
+        DrawText(
+            graphics,
+            label,
+            PanelTheme.MonoSmall,
+            PanelTheme.Foreground3,
+            new Rectangle(x, y, labelWidth + S(2), height),
+            StringAlignment.Near,
+            StringAlignment.Center,
+            ellipsis: false);
+    }
+
+    private void DrawCornerTicks(Graphics graphics, Rectangle rect, Color color)
+    {
+        int inset = S(3);
+        int length = S(8);
+        int left = rect.X + inset;
+        int right = rect.Right - inset;
+        int top = rect.Y + inset;
+        int bottom = rect.Bottom - inset;
+
+        using var pen = new Pen(color, PenWidth(1));
+        graphics.DrawLine(pen, left, top, left + length, top);
+        graphics.DrawLine(pen, left, top, left, top + length);
+        graphics.DrawLine(pen, right - length, top, right, top);
+        graphics.DrawLine(pen, right, top, right, top + length);
+        graphics.DrawLine(pen, left, bottom - length, left, bottom);
+        graphics.DrawLine(pen, left, bottom, left + length, bottom);
+        graphics.DrawLine(pen, right, bottom - length, right, bottom);
+        graphics.DrawLine(pen, right - length, bottom, right, bottom);
     }
 
     private void DrawBlock(Graphics graphics, Rectangle rect)

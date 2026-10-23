@@ -267,21 +267,6 @@ internal static class CompositionRoot
                 previewWindow.Close();
             }
 
-            instance.ListenForActivation(() =>
-            {
-                if (previewWindow.IsDisposed)
-                {
-                    return;
-                }
-
-                // 事件在后台线程触发，切回 UI 线程再操作窗口
-                previewWindow.BeginInvoke(() =>
-                {
-                    OpenPanel();
-                    log.WriteLine("[单实例] 已响应第二个实例的激活请求");
-                });
-            });
-
             previewWindow.FormClosing += (_, e) =>
             {
                 SaveSettings(
@@ -365,6 +350,10 @@ internal static class CompositionRoot
                         liveStats,
                         () => sourceMonitor,
                         () => previewMonitor,
+                        () => monitors,
+                        SelectSource,
+                        SelectPreview,
+                        SwapDirection,
                         () => gpu?.AdapterName ?? "—",
                         () => captureExcluded,
                         () => WindowPlacement.GetClientSize(previewWindow.Handle),
@@ -395,7 +384,23 @@ internal static class CompositionRoot
             CaptureSession activeSession = session;
             RenderLoop activeLoop = loop;
 
-            void SwitchSource(MonitorDescriptor monitor)
+            // 第二个实例的激活请求要打开面板，注册放在会话就绪之后，避免调用尚未初始化的本地函数
+            instance.ListenForActivation(() =>
+            {
+                if (previewWindow.IsDisposed)
+                {
+                    return;
+                }
+
+                // 事件在后台线程触发，切回 UI 线程再操作窗口
+                previewWindow.BeginInvoke(() =>
+                {
+                    OpenPanel();
+                    log.WriteLine("[单实例] 已响应第二个实例的激活请求");
+                });
+            });
+
+            bool SwitchSource(MonitorDescriptor monitor)
             {
                 if (!activeSession.TrySwitch(monitor, out string? switchError))
                 {
@@ -407,9 +412,11 @@ internal static class CompositionRoot
                             "Glimpse",
                             MessageBoxButtons.OK,
                             MessageBoxIcon.Warning);
+                        return false;
                     }
 
-                    return;
+                    // 目标就是当前捕获源，无需切换
+                    return true;
                 }
 
                 // 先让渲染线程取新源，再调整窗口；旧源由 CaptureSession 延迟释放
@@ -431,10 +438,85 @@ internal static class CompositionRoot
                     sourceWidth,
                     sourceHeight,
                     previewMonitor);
-                WindowPlacement.Place(previewWindow.Handle, nextX, nextY, nextWidth, nextHeight);
+
+                // 不改变 Z 序：面板打开时预览窗不应被抬到面板之上
+                WindowPlacement.Move(previewWindow.Handle, nextX, nextY, nextWidth, nextHeight);
 
                 tray?.SetStatusText($"捕获 #{monitor.Index} · 预览 #{previewMonitor.Index}");
                 log.WriteLine($"[切换] 已切换到显示器 #{monitor.Index}，窗口 {nextWidth}x{nextHeight}");
+                return true;
+            }
+
+            void SwitchPreview(MonitorDescriptor monitor)
+            {
+                if (monitor.Index == previewMonitor.Index)
+                {
+                    return;
+                }
+
+                MonitorDescriptor previous = previewMonitor;
+                previewMonitor = monitor;
+
+                (int x, int y, int width, int height) = WindowPlacement.GetBounds(previewWindow.Handle);
+                (int sourceWidth, int sourceHeight) = activeSession.Source.FrameSize;
+                (int nextX, int nextY, int nextWidth, int nextHeight) = PreviewLayout.FitToMonitor(
+                    x,
+                    y,
+                    width,
+                    height,
+                    sourceWidth,
+                    sourceHeight,
+                    previewMonitor);
+                WindowPlacement.Move(previewWindow.Handle, nextX, nextY, nextWidth, nextHeight);
+
+                tray?.SetStatusText($"捕获 #{sourceMonitor.Index} · 预览 #{previewMonitor.Index}");
+                log.WriteLine(
+                    $"[输出] 预览已移到显示器 #{monitor.Index}（{monitor.DeviceName}），" +
+                    $"窗口 {nextWidth}x{nextHeight}，原预览 #{previous.Index}");
+            }
+
+            // 同一块屏不能同时做源和输出：选择源时若命中当前预览屏，预览自动换到原来源
+            void SelectSource(MonitorDescriptor monitor)
+            {
+                MonitorDescriptor previousSource = sourceMonitor;
+                if (!SwitchSource(monitor))
+                {
+                    return;
+                }
+
+                if (monitor.Index == previewMonitor.Index)
+                {
+                    SwitchPreview(previousSource);
+                }
+            }
+
+            // 选择预览屏时若命中当前来源，先把捕获换到原预览屏，再把窗口移过去
+            void SelectPreview(MonitorDescriptor monitor)
+            {
+                MonitorDescriptor previousPreview = previewMonitor;
+
+                if (monitor.Index == sourceMonitor.Index)
+                {
+                    if (!SwitchSource(previousPreview))
+                    {
+                        return;
+                    }
+                }
+
+                SwitchPreview(monitor);
+            }
+
+            void SwapDirection()
+            {
+                MonitorDescriptor previousSource = sourceMonitor;
+                MonitorDescriptor previousPreview = previewMonitor;
+
+                if (!SwitchSource(previousPreview))
+                {
+                    return;
+                }
+
+                SwitchPreview(previousSource);
             }
 
             // 设备丢失后由健康检查触发：停掉整条链路，重建设备、采集会话与呈现器
@@ -576,7 +658,7 @@ internal static class CompositionRoot
                     activeSession.Source.FrameSize.Width,
                     activeSession.Source.FrameSize.Height,
                     previewMonitor);
-                WindowPlacement.Place(previewWindow.Handle, nextX, nextY, nextWidth, nextHeight);
+                WindowPlacement.Move(previewWindow.Handle, nextX, nextY, nextWidth, nextHeight);
 
                 tray?.SetStatusText($"捕获 #{sourceMonitor.Index} · 预览 #{previewMonitor.Index}");
             }
@@ -612,7 +694,7 @@ internal static class CompositionRoot
                     .Select(monitor => new TrayMonitorItem(
                         $"#{monitor.Index} {(monitor.IsPrimary ? "主屏" : "副屏")} {monitor.Width}x{monitor.Height}",
                         monitor.Index == activeSession.Monitor.Index,
-                        () => SwitchSource(monitor)))
+                        () => SelectSource(monitor)))
                     .ToList(),
                 clickThroughAvailable: false);
 
