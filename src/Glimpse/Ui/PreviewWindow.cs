@@ -68,6 +68,7 @@ internal sealed class PreviewWindow : Form
     private double _sourceAspect;
     private int _dpi;
     private bool _inSizeMove;
+    private (int X, int Y, int Width, int Height) _sizeMoveBounds;
 
     public PreviewWindow()
     {
@@ -104,6 +105,9 @@ internal sealed class PreviewWindow : Form
 
     /// <summary>系统显示配置变化（插拔、分辨率或缩放调整），由组合根重新枚举并收敛。</summary>
     public event Action? DisplayChanged;
+
+    /// <summary>用户完成一次拖动或缩放，位置不再对应任何贴边档位。</summary>
+    public event Action? UserMoved;
 
     private int CurrentDpi => _dpi > 0 ? _dpi : DpiScaling.DefaultDpi;
 
@@ -169,6 +173,7 @@ internal sealed class PreviewWindow : Form
         if (m.Msg == WmEnterSizeMove)
         {
             _inSizeMove = true;
+            _sizeMoveBounds = WindowPlacement.GetBounds(Handle);
             base.WndProc(ref m);
             return;
         }
@@ -176,6 +181,13 @@ internal sealed class PreviewWindow : Form
         if (m.Msg == WmExitSizeMove)
         {
             _inSizeMove = false;
+
+            // 只点击标题栏未移动时也会进出循环，位置尺寸有变化才算手动调整
+            if (WindowPlacement.GetBounds(Handle) != _sizeMoveBounds)
+            {
+                UserMoved?.Invoke();
+            }
+
             base.WndProc(ref m);
             return;
         }

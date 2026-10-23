@@ -2,6 +2,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Globalization;
 using System.Runtime.InteropServices;
+using Glimpse.Abstractions.Configuration;
 using Glimpse.Abstractions.Display;
 using Glimpse.Diagnostics;
 using Glimpse.Platform;
@@ -66,6 +67,16 @@ internal sealed class MainPanelWindow : Form
         ToggleDrawer,
         RunBenchmark,
         SwapDirection,
+        TogglePreview,
+        ToggleOverlay,
+        Scale25,
+        Scale50,
+        Scale75,
+        Scale100,
+        AnchorTopRight,
+        AnchorBottomRight,
+        AnchorCenter,
+        AnchorFree,
     }
 
     private readonly record struct CardKey(int Index, bool Source)
@@ -112,6 +123,14 @@ internal sealed class MainPanelWindow : Form
     private readonly Action<MonitorDescriptor> _selectSource;
     private readonly Action<MonitorDescriptor> _selectPreview;
     private readonly Action _swapDirection;
+    private readonly Func<bool> _isPreviewVisible;
+    private readonly Action _togglePreview;
+    private readonly Func<bool> _isOverlayVisible;
+    private readonly Action _toggleOverlay;
+    private readonly Func<int> _previewScale;
+    private readonly Action<int> _setPreviewScale;
+    private readonly Func<PreviewAnchor> _previewAnchor;
+    private readonly Action<PreviewAnchor> _setPreviewAnchor;
     private readonly Func<string> _adapterName;
     private readonly Func<bool> _captureExcluded;
     private readonly Func<(int Width, int Height)> _previewSize;
@@ -142,6 +161,14 @@ internal sealed class MainPanelWindow : Form
         Action<MonitorDescriptor> selectSource,
         Action<MonitorDescriptor> selectPreview,
         Action swapDirection,
+        Func<bool> previewVisible,
+        Action togglePreview,
+        Func<bool> overlayVisible,
+        Action toggleOverlay,
+        Func<int> previewScale,
+        Action<int> setPreviewScale,
+        Func<PreviewAnchor> previewAnchor,
+        Action<PreviewAnchor> setPreviewAnchor,
         Func<string> adapterName,
         Func<bool> captureExcluded,
         Func<(int Width, int Height)> previewSize,
@@ -157,6 +184,14 @@ internal sealed class MainPanelWindow : Form
         _selectSource = selectSource;
         _selectPreview = selectPreview;
         _swapDirection = swapDirection;
+        _isPreviewVisible = previewVisible;
+        _togglePreview = togglePreview;
+        _isOverlayVisible = overlayVisible;
+        _toggleOverlay = toggleOverlay;
+        _previewScale = previewScale;
+        _setPreviewScale = setPreviewScale;
+        _previewAnchor = previewAnchor;
+        _setPreviewAnchor = setPreviewAnchor;
         _adapterName = adapterName;
         _captureExcluded = captureExcluded;
         _previewSize = previewSize;
@@ -181,6 +216,9 @@ internal sealed class MainPanelWindow : Form
         _timer = new System.Windows.Forms.Timer { Interval = 1000 };
         _timer.Tick += (_, _) => RefreshStats();
     }
+
+    /// <summary>供组合根在切换输出参数后立即刷新读数与选中态。</summary>
+    public void RefreshNow() => RefreshStats();
 
     private int Dpi => _dpi > 0 ? _dpi : Math.Max(DpiScaling.DefaultDpi, DeviceDpi);
 
@@ -218,11 +256,15 @@ internal sealed class MainPanelWindow : Form
         MainRect.Width - S(36),
         S(BlockHeadHeight + 194));
 
+    private int ControlBlockHeight => Math.Min(
+        S(300),
+        Math.Max(S(240), MainRect.Bottom - S(14) - (TopologyRect.Bottom + S(12))));
+
     private Rectangle SourceBlockRect => new(
         MainRect.X + S(18),
         TopologyRect.Bottom + S(12),
         (MainRect.Width - S(36) - S(12)) / 2,
-        S(210));
+        ControlBlockHeight);
 
     private Rectangle PreviewBlockRect => new(
         SourceBlockRect.Right + S(12),
@@ -230,11 +272,16 @@ internal sealed class MainPanelWindow : Form
         SourceBlockRect.Width,
         SourceBlockRect.Height);
 
+    private bool ShowBench =>
+        MainRect.Bottom - S(14) - (SourceBlockRect.Bottom + S(12)) >= S(90);
+
     private Rectangle BenchRect => new(
         MainRect.X + S(18),
         SourceBlockRect.Bottom + S(12),
         MainRect.Width - S(36),
         S(90));
+
+    private int PreviewControlAreaHeight => S((21 * 5) + (3 * 4) + 6);
 
     private Rectangle SwapButtonRect => new(
         TopologyRect.Right - S(12) - S(92),
@@ -549,9 +596,18 @@ internal sealed class MainPanelWindow : Form
             }
         }
 
-        if (_view == PanelView.Monitor && BenchRunButtonRect.Contains(point))
+        if (_view == PanelView.Monitor && ShowBench && BenchRunButtonRect.Contains(point))
         {
             return PanelAction.RunBenchmark;
+        }
+
+        if (_view == PanelView.Monitor)
+        {
+            PanelAction? previewAction = PreviewControlHit(point);
+            if (previewAction is { } action)
+            {
+                return action;
+            }
         }
 
         if (_view == PanelView.Monitor && SwapButtonRect.Contains(point))
@@ -617,11 +673,138 @@ internal sealed class MainPanelWindow : Form
             case PanelAction.SwapDirection:
                 _swapDirection();
                 break;
+
+            case PanelAction.TogglePreview:
+                _togglePreview();
+                break;
+
+            case PanelAction.ToggleOverlay:
+                _toggleOverlay();
+                break;
+
+            case PanelAction.Scale25:
+                _setPreviewScale(25);
+                break;
+
+            case PanelAction.Scale50:
+                _setPreviewScale(50);
+                break;
+
+            case PanelAction.Scale75:
+                _setPreviewScale(75);
+                break;
+
+            case PanelAction.Scale100:
+                _setPreviewScale(100);
+                break;
+
+            case PanelAction.AnchorTopRight:
+                _setPreviewAnchor(PreviewAnchor.TopRight);
+                break;
+
+            case PanelAction.AnchorBottomRight:
+                _setPreviewAnchor(PreviewAnchor.BottomRight);
+                break;
+
+            case PanelAction.AnchorCenter:
+                _setPreviewAnchor(PreviewAnchor.Center);
+                break;
+
+            case PanelAction.AnchorFree:
+                _setPreviewAnchor(PreviewAnchor.Free);
+                break;
         }
 
         _hover = PanelAction.None;
         _pressed = PanelAction.None;
         Invalidate();
+    }
+
+    private static readonly int[] ScalePercents = [25, 50, 75, 100];
+    private static readonly PanelAction[] ScaleActions =
+        [PanelAction.Scale25, PanelAction.Scale50, PanelAction.Scale75, PanelAction.Scale100];
+    private static readonly string[] ScaleLabels = ["25%", "50%", "75%", "100%"];
+
+    private static readonly (PreviewAnchor Anchor, PanelAction Action, string Label)[] AnchorChips =
+    [
+        (PreviewAnchor.TopRight, PanelAction.AnchorTopRight, "右上"),
+        (PreviewAnchor.BottomRight, PanelAction.AnchorBottomRight, "右下"),
+        (PreviewAnchor.Center, PanelAction.AnchorCenter, "居中"),
+        (PreviewAnchor.Free, PanelAction.AnchorFree, "自由"),
+    ];
+
+    private int PreviewRowsTop
+    {
+        get
+        {
+            List<(MonitorDescriptor Monitor, Rectangle Bounds)> cards =
+                LayoutCards(PreviewBlockRect, sourceSide: false, PreviewControlAreaHeight);
+            int top = cards.Count > 0
+                ? cards[^1].Bounds.Bottom
+                : PreviewBlockRect.Y + S(BlockHeadHeight) + S(8);
+            return top + S(8);
+        }
+    }
+
+    private Rectangle PreviewRowRect(int index) => new(
+        PreviewBlockRect.X + S(10),
+        PreviewRowsTop + (index * (S(21) + S(3))),
+        PreviewBlockRect.Width - S(20),
+        S(21));
+
+    private Rectangle ToggleRect(Rectangle row) => new(
+        row.Right - S(32),
+        row.Y + ((row.Height - S(16)) / 2),
+        S(32),
+        S(16));
+
+    private Rectangle[] ChipRects(Rectangle row, int count, int chipWidth)
+    {
+        int gap = S(3);
+        int total = (count * chipWidth) + ((count - 1) * gap);
+        int x = row.Right - total;
+        var rects = new Rectangle[count];
+
+        for (int index = 0; index < count; index++)
+        {
+            rects[index] = new Rectangle(x, row.Y, chipWidth, row.Height);
+            x += chipWidth + gap;
+        }
+
+        return rects;
+    }
+
+    private PanelAction? PreviewControlHit(Point point)
+    {
+        if (ToggleRect(PreviewRowRect(0)).Contains(point))
+        {
+            return PanelAction.TogglePreview;
+        }
+
+        if (ToggleRect(PreviewRowRect(1)).Contains(point))
+        {
+            return PanelAction.ToggleOverlay;
+        }
+
+        Rectangle[] scaleChips = ChipRects(PreviewRowRect(2), ScaleActions.Length, S(40));
+        for (int index = 0; index < scaleChips.Length; index++)
+        {
+            if (scaleChips[index].Contains(point))
+            {
+                return ScaleActions[index];
+            }
+        }
+
+        Rectangle[] anchorChips = ChipRects(PreviewRowRect(3), AnchorChips.Length, S(46));
+        for (int index = 0; index < anchorChips.Length; index++)
+        {
+            if (anchorChips[index].Contains(point))
+            {
+                return AnchorChips[index].Action;
+            }
+        }
+
+        return null;
     }
 
     private void SelectCard(CardHit card)
@@ -664,7 +847,10 @@ internal sealed class MainPanelWindow : Form
         return null;
     }
 
-    private List<(MonitorDescriptor Monitor, Rectangle Bounds)> LayoutCards(Rectangle block, bool sourceSide)
+    private List<(MonitorDescriptor Monitor, Rectangle Bounds)> LayoutCards(
+        Rectangle block,
+        bool sourceSide,
+        int reservedBottom = 0)
     {
         var cards = new List<(MonitorDescriptor, Rectangle)>();
         IReadOnlyList<MonitorDescriptor> monitors = _monitors();
@@ -672,9 +858,9 @@ internal sealed class MainPanelWindow : Form
 
         var body = new Rectangle(
             block.X + S(10),
-            block.Y + S(BlockHeadHeight) + S(10),
+            block.Y + S(BlockHeadHeight) + S(8),
             block.Width - S(20),
-            block.Height - S(BlockHeadHeight) - S(20));
+            block.Height - S(BlockHeadHeight) - S(16) - reservedBottom);
 
         int y = body.Y;
         foreach (MonitorDescriptor monitor in monitors)
@@ -1131,6 +1317,11 @@ internal sealed class MainPanelWindow : Form
 
     private void DrawBenchSummary(Graphics graphics)
     {
+        if (!ShowBench)
+        {
+            return;
+        }
+
         Rectangle block = BenchRect;
         DrawBlock(graphics, block);
         DrawBlockHead(graphics, block, "基准测试", "配置在测试视图");
@@ -1176,9 +1367,17 @@ internal sealed class MainPanelWindow : Form
         DrawBlock(graphics, block);
 
         MonitorDescriptor selected = sourceSide ? _sourceMonitor() : _previewMonitor();
-        DrawBlockHead(graphics, block, title, $"#{selected.Index} {ShortDeviceName(selected.DeviceName)}");
+        string headRight = $"#{selected.Index} {ShortDeviceName(selected.DeviceName)}";
+        if (!sourceSide)
+        {
+            (int width, int height) = _previewSize();
+            headRight += $" · {width}×{height}";
+        }
 
-        List<(MonitorDescriptor Monitor, Rectangle Bounds)> cards = LayoutCards(block, sourceSide);
+        DrawBlockHead(graphics, block, title, headRight);
+
+        int reserved = sourceSide ? 0 : PreviewControlAreaHeight;
+        List<(MonitorDescriptor Monitor, Rectangle Bounds)> cards = LayoutCards(block, sourceSide, reserved);
         foreach ((MonitorDescriptor monitor, Rectangle bounds) in cards)
         {
             bool isSelected = IsSameMonitor(monitor, selected);
@@ -1186,9 +1385,65 @@ internal sealed class MainPanelWindow : Form
             DrawMonitorCard(graphics, bounds, monitor, isSelected, hovered);
         }
 
+        if (sourceSide)
+        {
+            DrawSourceInfoRows(graphics, block, cards);
+            DrawSourceHint(graphics, block, cards);
+        }
+        else
+        {
+            DrawPreviewControlRows(graphics);
+        }
+    }
+
+    private void DrawSourceInfoRows(
+        Graphics graphics,
+        Rectangle block,
+        List<(MonitorDescriptor Monitor, Rectangle Bounds)> cards)
+    {
+        int top = cards.Count > 0
+            ? cards[^1].Bounds.Bottom + S(8)
+            : block.Y + S(BlockHeadHeight) + S(8);
+        int x = block.X + S(10);
+        int width = block.Width - S(20);
+
+        DrawLine(graphics, x, top - S(4), x + width, top - S(4), PanelTheme.Line);
+
+        bool excluded = _captureExcluded();
+        for (int index = 0; index < 3; index++)
+        {
+            var row = new Rectangle(x, top + (index * (S(21) + S(3))), width, S(21));
+
+            switch (index)
+            {
+                case 0:
+                    DrawInfoRow(
+                        graphics,
+                        row,
+                        "捕获隐身",
+                        excluded ? "已启用" : "不可用",
+                        excluded ? PanelTheme.Ok : PanelTheme.Warn);
+                    break;
+                case 1:
+                    DrawInfoRow(graphics, row, "采集路径", "WGC · 显存零拷贝", null);
+                    break;
+                default:
+                    DrawInfoRow(graphics, row, "帧池", "2", null);
+                    break;
+            }
+        }
+    }
+
+    private void DrawSourceHint(
+        Graphics graphics,
+        Rectangle block,
+        List<(MonitorDescriptor Monitor, Rectangle Bounds)> cards)
+    {
         int hintTop = block.Bottom - S(26);
-        int cardsBottom = cards.Count > 0 ? cards[^1].Bounds.Bottom : block.Y + S(BlockHeadHeight);
-        if (hintTop - cardsBottom < S(8))
+        int lastBottom = cards.Count > 0
+            ? cards[^1].Bounds.Bottom + S((21 * 3) + (3 * 2))
+            : block.Y + S(BlockHeadHeight);
+        if (hintTop - lastBottom < S(8))
         {
             return;
         }
@@ -1196,14 +1451,155 @@ internal sealed class MainPanelWindow : Form
         DrawLine(graphics, block.X + S(10), hintTop - S(6), block.Right - S(10), hintTop - S(6), PanelTheme.Line);
         DrawText(
             graphics,
-            sourceSide
-                ? "同一块屏不能同时作为源与输出；热插拔后自动重新枚举"
-                : "切换输出屏会按源比例移动预览窗，捕获不中断",
+            "同一块屏不能同时作为源与输出；热插拔后自动重新枚举",
             PanelTheme.Small,
             PanelTheme.Foreground3,
             new Rectangle(block.X + S(10), hintTop, block.Width - S(20), S(16)),
             StringAlignment.Near,
             StringAlignment.Center);
+    }
+
+    private static void DrawInfoRow(Graphics graphics, Rectangle row, string label, string value, Color? valueColor)
+    {
+        DrawText(
+            graphics,
+            label,
+            PanelTheme.Small,
+            PanelTheme.Foreground3,
+            new Rectangle(row.X, row.Y, row.Width / 2, row.Height),
+            StringAlignment.Near,
+            StringAlignment.Center,
+            ellipsis: false);
+
+        DrawText(
+            graphics,
+            value,
+            PanelTheme.MonoSmall,
+            valueColor ?? PanelTheme.Foreground2,
+            new Rectangle(row.X + (row.Width / 2), row.Y, row.Width / 2, row.Height),
+            StringAlignment.Far,
+            StringAlignment.Center);
+    }
+
+    private void DrawPreviewControlRows(Graphics graphics)
+    {
+        Rectangle shown = PreviewRowRect(0);
+        DrawPreviewRowLabel(graphics, shown, "预览显示");
+        DrawToggle(graphics, ToggleRect(shown), _isPreviewVisible(), PanelAction.TogglePreview);
+
+        Rectangle overlay = PreviewRowRect(1);
+        DrawPreviewRowLabel(graphics, overlay, "窗口内读数");
+        DrawToggle(graphics, ToggleRect(overlay), _isOverlayVisible(), PanelAction.ToggleOverlay);
+
+        Rectangle scaleRow = PreviewRowRect(2);
+        DrawPreviewRowLabel(graphics, scaleRow, "窗口尺寸");
+        int scale = _previewScale();
+        Rectangle[] scaleChips = ChipRects(scaleRow, ScaleActions.Length, S(40));
+        for (int index = 0; index < scaleChips.Length; index++)
+        {
+            DrawChip(
+                graphics,
+                scaleChips[index],
+                ScaleLabels[index],
+                scale == ScalePercents[index],
+                ScaleActions[index]);
+        }
+
+        Rectangle anchorRow = PreviewRowRect(3);
+        DrawPreviewRowLabel(graphics, anchorRow, "贴边位置");
+        PreviewAnchor anchor = _previewAnchor();
+        Rectangle[] anchorChips = ChipRects(anchorRow, AnchorChips.Length, S(46));
+        for (int index = 0; index < anchorChips.Length; index++)
+        {
+            (PreviewAnchor value, PanelAction action, string label) = AnchorChips[index];
+            DrawChip(graphics, anchorChips[index], label, anchor == value, action);
+        }
+
+        Rectangle latencyRow = PreviewRowRect(4);
+        DrawPreviewRowLabel(graphics, latencyRow, "帧延迟上限");
+        DrawText(
+            graphics,
+            "1 帧",
+            PanelTheme.MonoSmall,
+            PanelTheme.Foreground2,
+            new Rectangle(latencyRow.X, latencyRow.Y, latencyRow.Width, latencyRow.Height),
+            StringAlignment.Far,
+            StringAlignment.Center,
+            ellipsis: false);
+    }
+
+    private void DrawPreviewRowLabel(Graphics graphics, Rectangle row, string label) =>
+        DrawText(
+            graphics,
+            label,
+            PanelTheme.Small,
+            PanelTheme.Foreground2,
+            new Rectangle(row.X, row.Y, row.Width - S(210), row.Height),
+            StringAlignment.Near,
+            StringAlignment.Center,
+            ellipsis: false);
+
+    private void DrawToggle(Graphics graphics, Rectangle bounds, bool on, PanelAction action)
+    {
+        bool hover = _hover == action;
+        int trackWidth = S(32);
+        int trackHeight = S(16);
+        var track = new Rectangle(
+            bounds.X + ((bounds.Width - trackWidth) / 2),
+            bounds.Y + ((bounds.Height - trackHeight) / 2),
+            trackWidth,
+            trackHeight);
+
+        using (var path = Rounded(track, trackHeight / 2))
+        {
+            using (var fill = new SolidBrush(on ? PanelTheme.Amber : PanelTheme.Surface2))
+            {
+                graphics.FillPath(fill, path);
+            }
+
+            Color border = on
+                ? PanelTheme.Amber
+                : hover ? PanelTheme.Line3 : PanelTheme.Line2;
+            using var pen = new Pen(border, PenWidth(1));
+            graphics.DrawPath(pen, path);
+        }
+
+        int knob = S(10);
+        int knobX = on
+            ? track.Right - knob - S(3)
+            : track.X + S(3);
+        using (var brush = new SolidBrush(on ? PanelTheme.AmberInk : PanelTheme.Foreground3))
+        {
+            graphics.FillEllipse(brush, knobX, track.Y + ((track.Height - knob) / 2), knob, knob);
+        }
+    }
+
+    private void DrawChip(Graphics graphics, Rectangle bounds, string text, bool active, PanelAction action)
+    {
+        bool hover = _hover == action;
+        using (var path = Rounded(bounds, S(2)))
+        {
+            using (var fill = new SolidBrush(active ? PanelTheme.Surface2 : PanelTheme.Surface))
+            {
+                graphics.FillPath(fill, path);
+            }
+
+            Color border = active
+                ? PanelTheme.Amber
+                : hover ? PanelTheme.Line3 : PanelTheme.Line2;
+            using var pen = new Pen(border, PenWidth(1));
+            graphics.DrawPath(pen, path);
+        }
+
+        DrawText(
+            graphics,
+            text,
+            PanelTheme.MonoSmall,
+            active ? PanelTheme.Amber : hover ? PanelTheme.Foreground2 : PanelTheme.Foreground3,
+            bounds,
+            StringAlignment.Center,
+            StringAlignment.Center,
+            ellipsis: false);
     }
 
     private void DrawMonitorCard(

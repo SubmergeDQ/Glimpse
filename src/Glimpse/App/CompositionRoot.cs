@@ -127,6 +127,8 @@ internal static class CompositionRoot
         bool recovering = false;
         bool captureExcluded = false;
         int recoverAttempts = 0;
+        int previewScale = Math.Clamp(settings.PreviewScalePercent, 1, 100);
+        PreviewAnchor previewAnchor = settings.PreviewAnchor;
 
         try
         {
@@ -193,6 +195,12 @@ internal static class CompositionRoot
                 statsOverlay.Show();
                 PositionOverlay();
                 WindowCaptureExclusion.Apply(statsOverlay.Handle);
+
+                // 面板正在操作时保持在最上层，避免读数框压住面板
+                if (panel is { Visible: true })
+                {
+                    WindowPlacement.SetTopMost(panel.Handle, true);
+                }
             }
 
             void SetPreviewVisible(bool visible)
@@ -203,6 +211,11 @@ internal static class CompositionRoot
 
                     // 重新显示时再显式置顶，避免 TopMost 属性未落到原生样式
                     WindowPlacement.BringToFront(previewWindow.Handle);
+                    if (panel is { Visible: true })
+                    {
+                        WindowPlacement.SetTopMost(panel.Handle, true);
+                    }
+
                     if (overlayEnabled)
                     {
                         ShowOverlay();
@@ -236,6 +249,20 @@ internal static class CompositionRoot
             previewWindow.LocationChanged += (_, _) => PositionOverlay();
             previewWindow.ClientSizeChanged += (_, _) => PositionOverlay();
             statsOverlay.SizeChanged += (_, _) => PositionOverlay();
+
+            // 手动拖动或缩放后，贴边档位不再成立，自动切到「自由」
+            previewWindow.UserMoved += () =>
+            {
+                if (previewAnchor == PreviewAnchor.Free)
+                {
+                    return;
+                }
+
+                previewAnchor = PreviewAnchor.Free;
+                settings = settings with { PreviewAnchor = previewAnchor };
+                log.WriteLine("[输出] 用户手动移动预览窗，贴边方式改为自由");
+                panel?.RefreshNow();
+            };
 
             if (overlayEnabled)
             {
@@ -354,6 +381,14 @@ internal static class CompositionRoot
                         SelectSource,
                         SelectPreview,
                         SwapDirection,
+                        () => previewWindow.Visible,
+                        TogglePreview,
+                        () => overlayEnabled,
+                        ToggleOverlay,
+                        () => previewScale,
+                        ApplyPreviewScale,
+                        () => previewAnchor,
+                        ApplyPreviewAnchor,
                         () => gpu?.AdapterName ?? "—",
                         () => captureExcluded,
                         () => WindowPlacement.GetClientSize(previewWindow.Handle),
@@ -442,6 +477,16 @@ internal static class CompositionRoot
                 // 不改变 Z 序：面板打开时预览窗不应被抬到面板之上
                 WindowPlacement.Move(previewWindow.Handle, nextX, nextY, nextWidth, nextHeight);
 
+                if (previewAnchor != PreviewAnchor.Free)
+                {
+                    (int anchorX, int anchorY) = PreviewLayout.AnchorPosition(
+                        previewMonitor,
+                        nextWidth,
+                        nextHeight,
+                        previewAnchor);
+                    WindowPlacement.Move(previewWindow.Handle, anchorX, anchorY, nextWidth, nextHeight);
+                }
+
                 tray?.SetStatusText($"捕获 #{monitor.Index} · 预览 #{previewMonitor.Index}");
                 log.WriteLine($"[切换] 已切换到显示器 #{monitor.Index}，窗口 {nextWidth}x{nextHeight}");
                 return true;
@@ -469,10 +514,67 @@ internal static class CompositionRoot
                     previewMonitor);
                 WindowPlacement.Move(previewWindow.Handle, nextX, nextY, nextWidth, nextHeight);
 
+                if (previewAnchor != PreviewAnchor.Free)
+                {
+                    (int anchorX, int anchorY) = PreviewLayout.AnchorPosition(
+                        previewMonitor,
+                        nextWidth,
+                        nextHeight,
+                        previewAnchor);
+                    WindowPlacement.Move(previewWindow.Handle, anchorX, anchorY, nextWidth, nextHeight);
+                }
+
                 tray?.SetStatusText($"捕获 #{sourceMonitor.Index} · 预览 #{previewMonitor.Index}");
                 log.WriteLine(
                     $"[输出] 预览已移到显示器 #{monitor.Index}（{monitor.DeviceName}），" +
                     $"窗口 {nextWidth}x{nextHeight}，原预览 #{previous.Index}");
+            }
+
+            void ApplyPreviewScale(int percent)
+            {
+                previewScale = Math.Clamp(percent, 1, 100);
+                settings = settings with { PreviewScalePercent = previewScale };
+
+                (int sourceWidth, int sourceHeight) = activeSession.Source.FrameSize;
+                (int fitWidth, _) = PreviewLayout.FitSize(previewMonitor, sourceWidth, sourceHeight);
+                int width = Math.Max(160, (int)Math.Round(fitWidth * previewScale / 100.0));
+                int height = Math.Max(90, (int)Math.Round(width * sourceHeight / (double)sourceWidth));
+
+                (int currentX, int currentY, int currentWidth, int currentHeight) =
+                    WindowPlacement.GetBounds(previewWindow.Handle);
+                int centerX = currentX + (currentWidth / 2);
+                int centerY = currentY + (currentHeight / 2);
+                int x = Math.Clamp(
+                    centerX - (width / 2),
+                    previewMonitor.X,
+                    Math.Max(previewMonitor.X, previewMonitor.X + previewMonitor.Width - width));
+                int y = Math.Clamp(
+                    centerY - (height / 2),
+                    previewMonitor.Y,
+                    Math.Max(previewMonitor.Y, previewMonitor.Y + previewMonitor.Height - height));
+
+                WindowPlacement.Move(previewWindow.Handle, x, y, width, height);
+                log.WriteLine($"[输出] 预览尺寸档位 {previewScale}%，窗口 {width}x{height}");
+                panel?.RefreshNow();
+            }
+
+            void ApplyPreviewAnchor(PreviewAnchor anchor)
+            {
+                previewAnchor = anchor;
+                settings = settings with { PreviewAnchor = previewAnchor };
+
+                if (anchor == PreviewAnchor.Free)
+                {
+                    log.WriteLine("[输出] 贴边方式改为自由");
+                    panel?.RefreshNow();
+                    return;
+                }
+
+                (int _, int _, int width, int height) = WindowPlacement.GetBounds(previewWindow.Handle);
+                (int x, int y) = PreviewLayout.AnchorPosition(previewMonitor, width, height, anchor);
+                WindowPlacement.Move(previewWindow.Handle, x, y, width, height);
+                log.WriteLine($"[输出] 预览贴边方式 {anchor}，窗口 {width}x{height} @ ({x},{y})");
+                panel?.RefreshNow();
             }
 
             // 同一块屏不能同时做源和输出：选择源时若命中当前预览屏，预览自动换到原来源

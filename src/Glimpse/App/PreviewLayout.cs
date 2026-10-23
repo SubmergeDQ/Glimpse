@@ -132,6 +132,62 @@ internal static class PreviewLayout
             newHeight);
     }
 
+    /// <summary>
+    /// 100% 尺寸：源画面按比例完整放入目标屏（留 <paramref name="margin"/> 边距）的最大尺寸。
+    /// 尺寸档位均以该值为基准，避免不同源分辨率下百分比含义漂移。
+    /// </summary>
+    public static (int Width, int Height) FitSize(
+        MonitorDescriptor monitor,
+        int sourceWidth,
+        int sourceHeight,
+        int margin = Margin)
+    {
+        if (sourceWidth <= 0 || sourceHeight <= 0)
+        {
+            return (MinimumWidth, MinimumHeight);
+        }
+
+        int budgetWidth = Math.Max(1, monitor.Width - (margin * 2));
+        int budgetHeight = Math.Max(1, monitor.Height - (margin * 2));
+        double scale = Math.Min(
+            budgetWidth / (double)sourceWidth,
+            budgetHeight / (double)sourceHeight);
+
+        return (
+            Math.Max(MinimumWidth, (int)Math.Round(sourceWidth * scale)),
+            Math.Max(MinimumHeight, (int)Math.Round(sourceHeight * scale)));
+    }
+
+    /// <summary>按贴边方式计算窗口左上角，并保证窗口完整落在目标屏内。</summary>
+    public static (int X, int Y) AnchorPosition(
+        MonitorDescriptor monitor,
+        int width,
+        int height,
+        PreviewAnchor anchor,
+        int margin = Margin)
+    {
+        int rightX = monitor.X + monitor.Width - width - margin;
+        int bottomY = monitor.Y + monitor.Height - height - margin;
+        int centerX = monitor.X + ((monitor.Width - width) / 2);
+        int centerY = monitor.Y + ((monitor.Height - height) / 2);
+
+        (int x, int y) = anchor switch
+        {
+            PreviewAnchor.TopRight => (rightX, monitor.Y + margin),
+            PreviewAnchor.Center => (centerX, centerY),
+            _ => (rightX, bottomY),
+        };
+
+        int minX = monitor.X + margin;
+        int minY = monitor.Y + margin;
+        int maxX = Math.Max(minX, monitor.X + monitor.Width - width - margin);
+        int maxY = Math.Max(minY, monitor.Y + monitor.Height - height - margin);
+
+        return (
+            Math.Clamp(x, minX, maxX),
+            Math.Clamp(y, minY, maxY));
+    }
+
     public static (int X, int Y, int Width, int Height) Compute(
         MonitorDescriptor monitor,
         int sourceWidth,

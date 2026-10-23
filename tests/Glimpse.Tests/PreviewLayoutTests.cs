@@ -129,6 +129,63 @@ public sealed class PreviewLayoutTests
     }
 
     [Fact]
+    public void FitSizeKeepsSourceAspectAndStaysInsideMonitor()
+    {
+        (int width, int height) = PreviewLayout.FitSize(Primary, 1080, 1920);
+
+        Assert.Equal(1392, height);
+        Assert.InRange(width, 781, 784);
+        Assert.True(width <= Primary.Width - 48);
+        Assert.True(height <= Primary.Height - 48);
+    }
+
+    [Fact]
+    public void AnchorBottomRightUsesMargin()
+    {
+        (int x, int y) = PreviewLayout.AnchorPosition(
+            Primary,
+            400,
+            800,
+            PreviewAnchor.BottomRight);
+
+        Assert.Equal(2560 - 400 - 24, x);
+        Assert.Equal(1440 - 800 - 24, y);
+    }
+
+    [Fact]
+    public void AnchorTopRightAndCenter()
+    {
+        (int topX, int topY) = PreviewLayout.AnchorPosition(
+            Primary,
+            400,
+            800,
+            PreviewAnchor.TopRight);
+        (int centerX, int centerY) = PreviewLayout.AnchorPosition(
+            Primary,
+            400,
+            800,
+            PreviewAnchor.Center);
+
+        Assert.Equal(2136, topX);
+        Assert.Equal(24, topY);
+        Assert.Equal(1080, centerX);
+        Assert.Equal(320, centerY);
+    }
+
+    [Fact]
+    public void AnchorClampsOversizedWindowInsideMonitor()
+    {
+        (int x, int y) = PreviewLayout.AnchorPosition(
+            Primary,
+            3000,
+            2000,
+            PreviewAnchor.BottomRight);
+
+        Assert.Equal(24, x);
+        Assert.Equal(24, y);
+    }
+
+    [Fact]
     public void FitToMonitorShrinksOversizedWindow()
     {
         (int _, int _, int width, int height) = PreviewLayout.FitToMonitor(

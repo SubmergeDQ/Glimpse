@@ -5,6 +5,15 @@ namespace Glimpse.Abstractions.Configuration;
 /// </summary>
 public readonly record struct PreviewPlacement(int X, int Y, int Width, int Height);
 
+/// <summary>预览窗在目标显示器内的贴边方式。</summary>
+public enum PreviewAnchor
+{
+    TopRight,
+    BottomRight,
+    Center,
+    Free,
+}
+
 /// <summary>
 /// 应用设置。全部字段可空或带默认值，旧版本配置缺少字段时能直接反序列化。
 /// </summary>
@@ -30,4 +39,10 @@ public sealed record AppSettings
 
     /// <summary>是否显示延迟与帧率叠加读数。</summary>
     public bool ShowLatencyOverlay { get; init; } = true;
+
+    /// <summary>预览窗尺寸档位，相对“适配目标屏的最大尺寸”的百分比。</summary>
+    public int PreviewScalePercent { get; init; } = 50;
+
+    /// <summary>预览窗贴边方式，自由表示保留用户拖动的位置。</summary>
+    public PreviewAnchor PreviewAnchor { get; init; } = PreviewAnchor.BottomRight;
 }

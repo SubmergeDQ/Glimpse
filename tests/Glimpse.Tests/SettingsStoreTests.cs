@@ -76,6 +76,8 @@ public sealed class SettingsStoreTests : IDisposable
         Assert.Equal(1, settings.SourceMonitorIndex);
         Assert.True(settings.ClickThrough);
         Assert.Null(settings.SourceDeviceName);
+        Assert.Equal(50, settings.PreviewScalePercent);
+        Assert.Equal(PreviewAnchor.BottomRight, settings.PreviewAnchor);
     }
 
     public void Dispose()
