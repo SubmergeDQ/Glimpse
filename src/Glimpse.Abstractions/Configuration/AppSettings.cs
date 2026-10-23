@@ -45,4 +45,7 @@ public sealed record AppSettings
 
     /// <summary>预览窗贴边方式，自由表示保留用户拖动的位置。</summary>
     public PreviewAnchor PreviewAnchor { get; init; } = PreviewAnchor.BottomRight;
+
+    /// <summary>面板基准测试的单次时长，单位秒。</summary>
+    public int TestDurationSeconds { get; init; } = 60;
 }

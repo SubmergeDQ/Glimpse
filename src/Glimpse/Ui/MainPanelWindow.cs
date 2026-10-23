@@ -77,6 +77,10 @@ internal sealed class MainPanelWindow : Form
         AnchorBottomRight,
         AnchorCenter,
         AnchorFree,
+        StartBenchmark,
+        Duration15,
+        Duration60,
+        Duration300,
     }
 
     private readonly record struct CardKey(int Index, bool Source)
@@ -131,6 +135,10 @@ internal sealed class MainPanelWindow : Form
     private readonly Action<int> _setPreviewScale;
     private readonly Func<PreviewAnchor> _previewAnchor;
     private readonly Action<PreviewAnchor> _setPreviewAnchor;
+    private readonly Action<int, Action<BenchmarkResult?, string?>> _startBenchmark;
+    private readonly Func<int> _testDuration;
+    private readonly Action<int> _setTestDuration;
+    private readonly System.Windows.Forms.Timer _benchmarkTimer;
     private readonly Func<string> _adapterName;
     private readonly Func<bool> _captureExcluded;
     private readonly Func<(int Width, int Height)> _previewSize;
@@ -150,6 +158,11 @@ internal sealed class MainPanelWindow : Form
     private PanelAction _pressed = PanelAction.None;
     private CardKey _hoverCard = CardKey.None;
     private CardKey _pressedCard = CardKey.None;
+    private BenchmarkResult? _lastBenchmark;
+    private string? _lastReportPath;
+    private bool _benchmarkRunning;
+    private DateTime _benchmarkStartedAt;
+    private int _benchmarkRunSeconds = 60;
 
     public MainPanelWindow(
         string version,
@@ -169,6 +182,9 @@ internal sealed class MainPanelWindow : Form
         Action<int> setPreviewScale,
         Func<PreviewAnchor> previewAnchor,
         Action<PreviewAnchor> setPreviewAnchor,
+        Action<int, Action<BenchmarkResult?, string?>> startBenchmark,
+        Func<int> testDuration,
+        Action<int> setTestDuration,
         Func<string> adapterName,
         Func<bool> captureExcluded,
         Func<(int Width, int Height)> previewSize,
@@ -192,6 +208,9 @@ internal sealed class MainPanelWindow : Form
         _setPreviewScale = setPreviewScale;
         _previewAnchor = previewAnchor;
         _setPreviewAnchor = setPreviewAnchor;
+        _startBenchmark = startBenchmark;
+        _testDuration = testDuration;
+        _setTestDuration = setTestDuration;
         _adapterName = adapterName;
         _captureExcluded = captureExcluded;
         _previewSize = previewSize;
@@ -215,6 +234,9 @@ internal sealed class MainPanelWindow : Form
 
         _timer = new System.Windows.Forms.Timer { Interval = 1000 };
         _timer.Tick += (_, _) => RefreshStats();
+
+        _benchmarkTimer = new System.Windows.Forms.Timer { Interval = 400 };
+        _benchmarkTimer.Tick += (_, _) => Invalidate();
     }
 
     /// <summary>供组合根在切换输出参数后立即刷新读数与选中态。</summary>
@@ -289,6 +311,52 @@ internal sealed class MainPanelWindow : Form
         S(92),
         S(24));
 
+    private Rectangle TestContentRect => new(
+        MainRect.X + S(18),
+        MainRect.Y + S(14),
+        MainRect.Width - S(36),
+        MainRect.Height - S(28));
+
+    private Rectangle TestConfigRect => new(
+        TestContentRect.X,
+        TestContentRect.Y,
+        TestContentRect.Width,
+        S(150));
+
+    private int TestEnvironmentHeight => S(86);
+
+    private Rectangle TestResultRect => new(
+        TestContentRect.X,
+        TestConfigRect.Bottom + S(12),
+        TestContentRect.Width,
+        Math.Max(
+            S(180),
+            TestContentRect.Bottom - (TestConfigRect.Bottom + S(12)) - S(12) - TestEnvironmentHeight));
+
+    private Rectangle TestEnvironmentRect => new(
+        TestContentRect.X,
+        TestResultRect.Bottom + S(12),
+        TestContentRect.Width,
+        TestEnvironmentHeight);
+
+    private Rectangle TestStartButtonRect => new(
+        TestConfigRect.Right - S(12) - S(170),
+        TestConfigRect.Bottom - S(12) - S(28),
+        S(170),
+        S(28));
+
+    private Rectangle TestDurationRow => new(
+        TestConfigRect.X + S(12),
+        TestConfigRect.Y + S(BlockHeadHeight) + S(10),
+        TestConfigRect.Width - S(24),
+        S(22));
+
+    private Rectangle TestReportButtonRect => new(
+        TestResultRect.Right - S(12) - S(96),
+        TestResultRect.Bottom - S(12) - S(24),
+        S(96),
+        S(24));
+
     private Rectangle BenchRunButtonRect => new(
         BenchRect.Right - S(12) - S(156),
         BenchRect.Bottom - S(12) - S(28),
@@ -325,6 +393,7 @@ internal sealed class MainPanelWindow : Form
         base.OnVisibleChanged(e);
 
         _timer.Enabled = Visible;
+        _benchmarkTimer.Enabled = Visible && _benchmarkRunning;
         if (Visible)
         {
             RefreshStats();
@@ -610,6 +679,28 @@ internal sealed class MainPanelWindow : Form
             }
         }
 
+        if (_view == PanelView.Test)
+        {
+            if (!_benchmarkRunning && TestStartButtonRect.Contains(point))
+            {
+                return PanelAction.StartBenchmark;
+            }
+
+            Rectangle[] chips = TestDurationChipRects();
+            for (int index = 0; index < chips.Length; index++)
+            {
+                if (chips[index].Contains(point))
+                {
+                    return TestDurationActions[index];
+                }
+            }
+
+            if (TestReportButtonRect.Contains(point))
+            {
+                return PanelAction.OpenLog;
+            }
+        }
+
         if (_view == PanelView.Monitor && SwapButtonRect.Contains(point))
         {
             return PanelAction.SwapDirection;
@@ -713,6 +804,22 @@ internal sealed class MainPanelWindow : Form
             case PanelAction.AnchorFree:
                 _setPreviewAnchor(PreviewAnchor.Free);
                 break;
+
+            case PanelAction.StartBenchmark:
+                StartBenchmark();
+                break;
+
+            case PanelAction.Duration15:
+                _setTestDuration(15);
+                break;
+
+            case PanelAction.Duration60:
+                _setTestDuration(60);
+                break;
+
+            case PanelAction.Duration300:
+                _setTestDuration(300);
+                break;
         }
 
         _hover = PanelAction.None;
@@ -724,6 +831,11 @@ internal sealed class MainPanelWindow : Form
     private static readonly PanelAction[] ScaleActions =
         [PanelAction.Scale25, PanelAction.Scale50, PanelAction.Scale75, PanelAction.Scale100];
     private static readonly string[] ScaleLabels = ["25%", "50%", "75%", "100%"];
+
+    private static readonly int[] TestDurations = [15, 60, 300];
+    private static readonly PanelAction[] TestDurationActions =
+        [PanelAction.Duration15, PanelAction.Duration60, PanelAction.Duration300];
+    private static readonly string[] TestDurationLabels = ["15 秒", "60 秒", "5 分"];
 
     private static readonly (PreviewAnchor Anchor, PanelAction Action, string Label)[] AnchorChips =
     [
@@ -806,6 +918,55 @@ internal sealed class MainPanelWindow : Form
 
         return null;
     }
+
+    private Rectangle[] TestDurationChipRects()
+    {
+        Rectangle row = TestDurationRow;
+        int chipWidth = S(64);
+        int gap = S(3);
+        var rects = new Rectangle[TestDurations.Length];
+        int x = row.X + S(74);
+
+        for (int index = 0; index < rects.Length; index++)
+        {
+            rects[index] = new Rectangle(x, row.Y, chipWidth, row.Height);
+            x += chipWidth + gap;
+        }
+
+        return rects;
+    }
+
+    private void StartBenchmark()
+    {
+        if (_benchmarkRunning)
+        {
+            return;
+        }
+
+        _benchmarkRunning = true;
+        _benchmarkStartedAt = DateTime.UtcNow;
+        _benchmarkRunSeconds = _testDuration();
+        _benchmarkTimer.Enabled = Visible;
+        _startBenchmark(_benchmarkRunSeconds, OnBenchmarkCompleted);
+        Invalidate();
+    }
+
+    private void OnBenchmarkCompleted(BenchmarkResult? result, string? reportPath)
+    {
+        _benchmarkRunning = false;
+        _benchmarkTimer.Enabled = false;
+
+        if (result is not null)
+        {
+            _lastBenchmark = result;
+            _lastReportPath = reportPath;
+        }
+
+        RefreshNow();
+    }
+
+    private static string FormatDuration(int seconds) =>
+        seconds >= 300 ? "5 分" : $"{seconds} 秒";
 
     private void SelectCard(CardHit card)
     {
@@ -1056,10 +1217,7 @@ internal sealed class MainPanelWindow : Form
                 break;
 
             case PanelView.Test:
-                DrawPlaceholder(
-                    graphics,
-                    "基准测试",
-                    "下一小步接入：测试配置、运行进度与报告导出。");
+                DrawTestView(graphics);
                 break;
 
             default:
@@ -1705,6 +1863,363 @@ internal sealed class MainPanelWindow : Form
         int y = bounds.Y + S(6);
         graphics.DrawLine(pen, x + S(1), y, x + S(5), y + S(4));
         graphics.DrawLine(pen, x + S(5), y + S(4), x + S(12), y - S(4));
+    }
+
+    private void DrawTestView(Graphics graphics)
+    {
+        DrawTestConfig(graphics);
+        DrawTestResult(graphics);
+        DrawTestEnvironment(graphics);
+    }
+
+    private void DrawTestConfig(Graphics graphics)
+    {
+        Rectangle block = TestConfigRect;
+        DrawBlock(graphics, block);
+        DrawBlockHead(graphics, block, "测试配置", $"单次 {FormatDuration(_testDuration())} · 采样 1 秒");
+
+        Rectangle row = TestDurationRow;
+        DrawText(
+            graphics,
+            "单次时长",
+            PanelTheme.Small,
+            PanelTheme.Foreground2,
+            new Rectangle(row.X, row.Y, S(70), row.Height),
+            StringAlignment.Near,
+            StringAlignment.Center,
+            ellipsis: false);
+
+        int current = _testDuration();
+        Rectangle[] chips = TestDurationChipRects();
+        for (int index = 0; index < chips.Length; index++)
+        {
+            DrawChip(
+                graphics,
+                chips[index],
+                TestDurationLabels[index],
+                current == TestDurations[index],
+                TestDurationActions[index]);
+        }
+
+        DrawText(
+            graphics,
+            "验收：丢帧 < 0.1% · 端到端 p95 ≤ 20 ms · max ≤ 35 ms · CPU ≤ 20% 单核",
+            PanelTheme.Small,
+            PanelTheme.Foreground3,
+            new Rectangle(block.X + S(12), row.Bottom + S(6), block.Width - S(24), S(16)),
+            StringAlignment.Near,
+            StringAlignment.Center);
+
+        Rectangle button = TestStartButtonRect;
+        bool hover = !_benchmarkRunning && _hover == PanelAction.StartBenchmark;
+        using (var path = Rounded(button, S(2)))
+        {
+            Color fill = _benchmarkRunning
+                ? PanelTheme.Surface2
+                : hover ? Color.FromArgb(255, 188, 85) : PanelTheme.Amber;
+            using (var brush = new SolidBrush(fill))
+            {
+                graphics.FillPath(brush, path);
+            }
+
+            if (_benchmarkRunning)
+            {
+                using var pen = new Pen(PanelTheme.Line2, PenWidth(1));
+                graphics.DrawPath(pen, path);
+            }
+        }
+
+        DrawText(
+            graphics,
+            _benchmarkRunning ? "运行中…" : $"开始测试 · {FormatDuration(_testDuration())}",
+            PanelTheme.BodyStrong,
+            _benchmarkRunning ? PanelTheme.Foreground3 : PanelTheme.AmberInk,
+            button,
+            StringAlignment.Center,
+            StringAlignment.Center,
+            ellipsis: false);
+    }
+
+    private void DrawTestResult(Graphics graphics)
+    {
+        Rectangle block = TestResultRect;
+        DrawBlock(graphics, block);
+
+        string right = _benchmarkRunning
+            ? "运行中"
+            : _lastBenchmark is { } last
+                ? $"{last.StartedAt:MM-dd HH:mm} · {FormatDuration((int)last.Duration.TotalSeconds)}"
+                : "尚未运行";
+        DrawBlockHead(graphics, block, "上次结果", right);
+
+        var body = new Rectangle(
+            block.X + S(12),
+            block.Y + S(BlockHeadHeight) + S(10),
+            block.Width - S(24),
+            block.Height - S(BlockHeadHeight) - S(20));
+
+        if (_benchmarkRunning)
+        {
+            DrawTestProgress(graphics, body);
+            return;
+        }
+
+        if (_lastBenchmark is not { } result)
+        {
+            DrawText(
+                graphics,
+                "尚未运行过基准测试。选择单次时长后点「开始测试」。",
+                PanelTheme.Body,
+                PanelTheme.Foreground3,
+                body,
+                StringAlignment.Center,
+                StringAlignment.Center);
+            return;
+        }
+
+        DrawTestTable(graphics, body, result);
+
+        if (_lastReportPath is not null)
+        {
+            DrawText(
+                graphics,
+                $"报告：{_lastReportPath}",
+                PanelTheme.MonoSmall,
+                PanelTheme.Foreground3,
+                new Rectangle(body.X, block.Bottom - S(36), body.Width - S(110), S(18)),
+                StringAlignment.Near,
+                StringAlignment.Center);
+            DrawQuietButton(graphics, TestReportButtonRect, "打开日志目录", PanelAction.OpenLog);
+        }
+    }
+
+    private void DrawTestProgress(Graphics graphics, Rectangle body)
+    {
+        int elapsed = (int)Math.Clamp(
+            (DateTime.UtcNow - _benchmarkStartedAt).TotalSeconds,
+            0,
+            _benchmarkRunSeconds);
+
+        var track = new Rectangle(body.X, body.Y + S(10), body.Width - S(120), S(6));
+        using (var brush = new SolidBrush(PanelTheme.Line))
+        {
+            graphics.FillRectangle(brush, track);
+        }
+
+        int filled = (int)(track.Width * (elapsed / (double)Math.Max(1, _benchmarkRunSeconds)));
+        if (filled > 0)
+        {
+            using var brush = new SolidBrush(PanelTheme.Amber);
+            graphics.FillRectangle(brush, track.X, track.Y, filled, track.Height);
+        }
+
+        DrawText(
+            graphics,
+            $"{elapsed}s / {_benchmarkRunSeconds}s",
+            PanelTheme.MonoSmall,
+            PanelTheme.Foreground3,
+            new Rectangle(track.Right + S(8), track.Y - S(6), S(110), S(18)),
+            StringAlignment.Near,
+            StringAlignment.Center,
+            ellipsis: false);
+
+        int metricY = track.Bottom + S(22);
+        int column = body.Width / 3;
+        DrawTestMetric(graphics, new Rectangle(body.X, metricY, column, S(38)), "捕获帧率", _live ? $"{_latest.CaptureFps:F1}" : "—", "fps");
+        DrawTestMetric(graphics, new Rectangle(body.X + column, metricY, column, S(38)), "端到端 p95", _live ? $"{_latest.PresentP95:F1}" : "—", "ms");
+        DrawTestMetric(graphics, new Rectangle(body.X + (column * 2), metricY, column, S(38)), "丢帧", _live ? _latest.Dropped.ToString(CultureInfo.InvariantCulture) : "—", null);
+
+        DrawText(
+            graphics,
+            "测试期间可继续操作面板，完成后自动写入报告。",
+            PanelTheme.Small,
+            PanelTheme.Foreground3,
+            new Rectangle(body.X, metricY + S(46), body.Width, S(16)),
+            StringAlignment.Near,
+            StringAlignment.Center);
+    }
+
+    private void DrawTestMetric(
+        Graphics graphics,
+        Rectangle area,
+        string label,
+        string value,
+        string? unit)
+    {
+        DrawText(
+            graphics,
+            label,
+            PanelTheme.Small,
+            PanelTheme.Foreground3,
+            new Rectangle(area.X, area.Y, area.Width, S(14)),
+            StringAlignment.Near,
+            StringAlignment.Center,
+            ellipsis: false);
+
+        var valueBounds = new Rectangle(area.X, area.Y + S(14), area.Width, area.Height - S(14));
+        DrawText(
+            graphics,
+            value,
+            PanelTheme.MonoValue,
+            PanelTheme.Foreground,
+            valueBounds,
+            StringAlignment.Near,
+            StringAlignment.Center,
+            ellipsis: false);
+
+        if (unit is null)
+        {
+            return;
+        }
+
+        SizeF size = Measure(graphics, value, PanelTheme.MonoValue);
+        DrawText(
+            graphics,
+            unit,
+            PanelTheme.Small,
+            PanelTheme.Foreground3,
+            new Rectangle(area.X + (int)Math.Ceiling(size.Width) + S(4), valueBounds.Y, area.Width, valueBounds.Height),
+            StringAlignment.Near,
+            StringAlignment.Center,
+            ellipsis: false);
+    }
+
+    private void DrawTestTable(Graphics graphics, Rectangle body, BenchmarkResult result)
+    {
+        int headerHeight = S(22);
+        int rowHeight = S(24);
+
+        DrawTestCell(graphics, "指标", PanelTheme.Small, PanelTheme.Foreground3, body, columnFrom: 0, columnTo: 1, 0, headerHeight, StringAlignment.Near);
+        DrawTestCell(graphics, "本次", PanelTheme.Small, PanelTheme.Foreground3, body, 1, 2, 0, headerHeight, StringAlignment.Near);
+        DrawTestCell(graphics, "目标", PanelTheme.Small, PanelTheme.Foreground3, body, 2, 3, 0, headerHeight, StringAlignment.Near);
+        DrawTestCell(graphics, "判定", PanelTheme.Small, PanelTheme.Foreground3, body, 3, 4, 0, headerHeight, StringAlignment.Far);
+
+        double dropRate = result.Captured == 0 ? 0 : result.Dropped / (double)result.Captured;
+        bool p95Ok = result.Present.P95 <= 20;
+        bool maxOk = result.Present.Max <= 35;
+        bool dropOk = dropRate < 0.001;
+        bool cpuOk = result.CpuPercentSingleCore <= 20;
+
+        (string Name, string Value, string Target, string Verdict, Color Color)[] rows =
+        [
+            ("捕获帧率", $"{result.CaptureFps:F1} fps", "跟随源", "—", PanelTheme.Foreground3),
+            ("呈现帧率", $"{result.PresentFps:F1} fps", "跟随源", "—", PanelTheme.Foreground3),
+            ("回调年龄 p95", $"{result.Age.P95:F1} ms", "—", "—", PanelTheme.Foreground3),
+            ("端到端 p95", $"{result.Present.P95:F1} ms", "≤ 20 ms", p95Ok ? "通过" : "未通过", p95Ok ? PanelTheme.Ok : PanelTheme.Error),
+            ("端到端 max", $"{result.Present.Max:F1} ms", "≤ 35 ms", maxOk ? "通过" : "未通过", maxOk ? PanelTheme.Ok : PanelTheme.Error),
+            ("丢帧率", $"{dropRate * 100:F2}%", "< 0.1%", dropOk ? "通过" : "未通过", dropOk ? PanelTheme.Ok : PanelTheme.Error),
+            ("CPU", $"{result.CpuPercentSingleCore:F1}% 单核", "≤ 20%", cpuOk ? "通过" : "未通过", cpuOk ? PanelTheme.Ok : PanelTheme.Error),
+        ];
+
+        for (int index = 0; index < rows.Length; index++)
+        {
+            int offset = headerHeight + (index * rowHeight);
+            (string name, string value, string target, string verdict, Color color) = rows[index];
+
+            DrawTestCell(graphics, name, PanelTheme.Small, PanelTheme.Foreground2, body, 0, 1, offset, rowHeight, StringAlignment.Near);
+            DrawTestCell(graphics, value, PanelTheme.MonoSmall, PanelTheme.Foreground, body, 1, 2, offset, rowHeight, StringAlignment.Near);
+            DrawTestCell(graphics, target, PanelTheme.MonoSmall, PanelTheme.Foreground3, body, 2, 3, offset, rowHeight, StringAlignment.Near);
+            DrawTestCell(graphics, verdict, PanelTheme.Small, color, body, 3, 4, offset, rowHeight, StringAlignment.Far);
+        }
+
+        DrawLine(
+            graphics,
+            body.X,
+            body.Y + headerHeight - 1,
+            body.Right,
+            body.Y + headerHeight - 1,
+            PanelTheme.Line);
+        int tableBottom = body.Y + headerHeight + (rows.Length * rowHeight);
+        DrawLine(graphics, body.X, tableBottom, body.Right, tableBottom, PanelTheme.Line);
+
+        DrawText(
+            graphics,
+            "判定基于第 8 节验收阈值；WGC 按需出帧，帧率不作固定目标。",
+            PanelTheme.Small,
+            PanelTheme.Foreground3,
+            new Rectangle(body.X, tableBottom + S(8), body.Width, S(16)),
+            StringAlignment.Near,
+            StringAlignment.Center);
+    }
+
+    private static void DrawTestCell(
+        Graphics graphics,
+        string text,
+        Font font,
+        Color color,
+        Rectangle body,
+        int columnFrom,
+        int columnTo,
+        int offset,
+        int height,
+        StringAlignment align)
+    {
+        float[] columns = [0f, 0.40f, 0.62f, 0.82f, 1f];
+        int x = body.X + (int)(body.Width * columns[columnFrom]);
+        int width = (int)(body.Width * (columns[columnTo] - columns[columnFrom]));
+
+        DrawText(
+            graphics,
+            text,
+            font,
+            color,
+            new Rectangle(x, body.Y + offset, width, height),
+            align,
+            StringAlignment.Center);
+    }
+
+    private void DrawTestEnvironment(Graphics graphics)
+    {
+        Rectangle block = TestEnvironmentRect;
+        DrawBlock(graphics, block);
+        DrawBlockHead(graphics, block, "测试环境", right: null);
+
+        MonitorDescriptor source = _sourceMonitor();
+        MonitorDescriptor preview = _previewMonitor();
+        (int previewWidth, int previewHeight) = _previewSize();
+
+        int bodyY = block.Y + S(BlockHeadHeight) + S(10);
+        int column = (block.Width - S(24)) / 4;
+        int x = block.X + S(12);
+
+        DrawEnvironmentCell(graphics, new Rectangle(x, bodyY, column, S(40)), "适配器", _adapterName());
+        DrawEnvironmentCell(
+            graphics,
+            new Rectangle(x + column, bodyY, column, S(40)),
+            "源 → 预览",
+            $"{source.Width}×{source.Height} → {preview.Width}×{preview.Height}");
+        DrawEnvironmentCell(
+            graphics,
+            new Rectangle(x + (column * 2), bodyY, column, S(40)),
+            "预览窗",
+            $"{previewWidth}×{previewHeight}");
+        DrawEnvironmentCell(
+            graphics,
+            new Rectangle(x + (column * 3), bodyY, column, S(40)),
+            "版本",
+            $"v{_version}");
+    }
+
+    private void DrawEnvironmentCell(Graphics graphics, Rectangle area, string label, string value)
+    {
+        DrawText(
+            graphics,
+            label,
+            PanelTheme.Small,
+            PanelTheme.Foreground3,
+            new Rectangle(area.X, area.Y, area.Width, S(14)),
+            StringAlignment.Near,
+            StringAlignment.Center,
+            ellipsis: false);
+
+        DrawText(
+            graphics,
+            value,
+            PanelTheme.MonoSmall,
+            PanelTheme.Foreground2,
+            new Rectangle(area.X, area.Y + S(16), area.Width, area.Height - S(16)),
+            StringAlignment.Near,
+            StringAlignment.Center);
     }
 
     private void DrawPlaceholder(Graphics graphics, string title, string note)
@@ -2455,6 +2970,7 @@ internal sealed class MainPanelWindow : Form
         if (disposing)
         {
             _timer.Dispose();
+            _benchmarkTimer.Dispose();
         }
 
         base.Dispose(disposing);

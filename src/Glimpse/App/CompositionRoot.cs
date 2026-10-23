@@ -129,6 +129,9 @@ internal static class CompositionRoot
         int recoverAttempts = 0;
         int previewScale = Math.Clamp(settings.PreviewScalePercent, 1, 100);
         PreviewAnchor previewAnchor = settings.PreviewAnchor;
+        int testDuration = settings.TestDurationSeconds is 15 or 60 or 300
+            ? settings.TestDurationSeconds
+            : 60;
 
         try
         {
@@ -367,6 +370,44 @@ internal static class CompositionRoot
                 }
             }
 
+            void StartPanelBenchmark(int seconds, Action<BenchmarkResult?, string?> completed)
+            {
+                if (benchmark.IsRunning)
+                {
+                    completed(null, null);
+                    return;
+                }
+
+                async void Execute()
+                {
+                    try
+                    {
+                        tray?.SetBenchmarkEnabled(false);
+                        log.WriteLine($"[基准] 面板开始 {seconds} 秒基准测试");
+
+                        BenchmarkResult result = await benchmark.RunAsync(TimeSpan.FromSeconds(seconds));
+                        string path = BenchmarkReport.Write(result, logDirectory);
+                        log.WriteLine(
+                            $"[基准] 捕获 {result.CaptureFps:F1} fps，呈现 {result.PresentFps:F1} fps，" +
+                            $"丢弃 {result.Dropped}，present p95 {result.Present.P95:F1} ms，" +
+                            $"CPU {result.CpuPercentSingleCore:F1}% 单核，报告：{path}");
+
+                        completed(result, path);
+                    }
+                    catch (Exception ex)
+                    {
+                        log.WriteLine($"[基准] 面板运行失败：{ex}");
+                        completed(null, null);
+                    }
+                    finally
+                    {
+                        tray?.SetBenchmarkEnabled(true);
+                    }
+                }
+
+                Execute();
+            }
+
             void OpenPanel()
             {
                 if (panel is null || panel.IsDisposed)
@@ -389,6 +430,9 @@ internal static class CompositionRoot
                         ApplyPreviewScale,
                         () => previewAnchor,
                         ApplyPreviewAnchor,
+                        StartPanelBenchmark,
+                        () => testDuration,
+                        SetTestDuration,
                         () => gpu?.AdapterName ?? "—",
                         () => captureExcluded,
                         () => WindowPlacement.GetClientSize(previewWindow.Handle),
@@ -555,6 +599,14 @@ internal static class CompositionRoot
 
                 WindowPlacement.Move(previewWindow.Handle, x, y, width, height);
                 log.WriteLine($"[输出] 预览尺寸档位 {previewScale}%，窗口 {width}x{height}");
+                panel?.RefreshNow();
+            }
+
+            void SetTestDuration(int seconds)
+            {
+                testDuration = seconds is 15 or 60 or 300 ? seconds : 60;
+                settings = settings with { TestDurationSeconds = testDuration };
+                log.WriteLine($"[基准] 单次时长设为 {testDuration} 秒");
                 panel?.RefreshNow();
             }
 
