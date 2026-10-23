@@ -87,7 +87,7 @@ internal sealed class D3DPreviewHost : IPreviewHost
     private int _width;
     private int _height;
     private bool _clickThrough;
-    private bool _faulted;
+    private volatile bool _faulted;
     private bool _disposed;
 
     public D3DPreviewHost(
@@ -172,6 +172,16 @@ internal sealed class D3DPreviewHost : IPreviewHost
 
     /// <summary>呈现链路已失效（通常是设备移除）。调用方应停止渲染线程。</summary>
     public bool IsFaulted => _faulted;
+
+    /// <summary>
+    /// 仅供 <c>--simulate-fault</c> 诊断参数使用：把链路标记为失效，
+    /// 用于验证设备丢失后的重建流程。真实设备移除由 Present 结果码触发。
+    /// </summary>
+    internal void SimulateFault()
+    {
+        _faulted = true;
+        _log.WriteLine("[呈现] 模拟设备丢失，等待健康检查重建");
+    }
 
     public void Present(in CapturedFrame frame)
     {

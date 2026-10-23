@@ -14,13 +14,15 @@ internal readonly record struct MonitorSelection(MonitorDescriptor Source, Monit
 internal sealed record StartupOptions(
     int? SourceMonitorIndex,
     int? PreviewMonitorIndex,
-    int? BenchmarkSeconds = null)
+    int? BenchmarkSeconds = null,
+    int? FaultSimulationSeconds = null)
 {
     public static StartupOptions Parse(IReadOnlyList<string> args)
     {
         int? sourceIndex = null;
         int? previewIndex = null;
         int? benchmarkSeconds = null;
+        int? faultSimulationSeconds = null;
 
         for (int position = 0; position < args.Count; position++)
         {
@@ -28,8 +30,10 @@ internal sealed record StartupOptions(
             bool isSource = argument == "--source";
             bool isPreview = argument == "--preview";
             bool isBenchmark = argument == "--benchmark";
+            bool isFaultSimulation = argument == "--simulate-fault";
 
-            if ((!isSource && !isPreview && !isBenchmark) || position + 1 >= args.Count)
+            if ((!isSource && !isPreview && !isBenchmark && !isFaultSimulation)
+                || position + 1 >= args.Count)
             {
                 continue;
             }
@@ -44,16 +48,20 @@ internal sealed record StartupOptions(
                 {
                     previewIndex = value;
                 }
-                else
+                else if (isBenchmark)
                 {
                     benchmarkSeconds = value;
+                }
+                else
+                {
+                    faultSimulationSeconds = value;
                 }
             }
 
             position++;
         }
 
-        return new StartupOptions(sourceIndex, previewIndex, benchmarkSeconds);
+        return new StartupOptions(sourceIndex, previewIndex, benchmarkSeconds, faultSimulationSeconds);
     }
 
     /// <summary>

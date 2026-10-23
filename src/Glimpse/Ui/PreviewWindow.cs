@@ -16,6 +16,7 @@ internal sealed class PreviewWindow : Form
     private const long WsExNoActivate = 0x08000000;
 
     private const int WmNcHitTest = 0x0084;
+    private const int WmDisplayChange = 0x007E;
     private const int WmSizing = 0x0214;
     private const int HtCaption = 2;
     private const int HtLeft = 10;
@@ -75,6 +76,9 @@ internal sealed class PreviewWindow : Form
 
     public void AttachHost(IPreviewHost host) => _host = host;
 
+    /// <summary>系统显示配置变化（插拔、分辨率或缩放调整），由组合根重新枚举并收敛。</summary>
+    public event Action? DisplayChanged;
+
     /// <summary>设置源画面尺寸，交互缩放时按该宽高比约束窗口。</summary>
     public void SetSourceSize(int width, int height)
     {
@@ -105,6 +109,13 @@ internal sealed class PreviewWindow : Form
 
     protected override void WndProc(ref Message m)
     {
+        if (m.Msg == WmDisplayChange)
+        {
+            DisplayChanged?.Invoke();
+            base.WndProc(ref m);
+            return;
+        }
+
         if (m.Msg == WmSizing
             && _sourceAspect > 0
             && ToSizingEdge(m.WParam.ToInt32()) is { } edge)

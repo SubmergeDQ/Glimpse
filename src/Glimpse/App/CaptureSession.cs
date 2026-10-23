@@ -22,7 +22,10 @@ internal sealed class CaptureSession : IDisposable
     private readonly DiagnosticsLog _log;
     private readonly List<RetiredSource> _retired = new();
 
+    private bool _running;
     private bool _disposed;
+
+    public bool IsRunning => _running;
 
     public CaptureSession(
         GpuDevice gpu,
@@ -46,6 +49,30 @@ internal sealed class CaptureSession : IDisposable
 
     public WgcFrameSource Source { get; private set; }
 
+    /// <summary>启动当前会话。重复调用幂等。</summary>
+    public void Start()
+    {
+        if (_running)
+        {
+            return;
+        }
+
+        Source.StartCapture();
+        _running = true;
+    }
+
+    /// <summary>停止当前会话但保留资源，便于热插拔恢复后重新启动。</summary>
+    public void Stop()
+    {
+        if (!_running)
+        {
+            return;
+        }
+
+        Source.StopCapture();
+        _running = false;
+    }
+
     /// <summary>
     /// 切换到新的捕获显示器。返回 <c>false</c> 时旧会话保持运行：
     /// <paramref name="error"/> 为 <c>null</c> 表示目标就是当前显示器，无需切换；
@@ -55,8 +82,21 @@ internal sealed class CaptureSession : IDisposable
     {
         error = null;
 
-        if (monitor.Index == Monitor.Index)
+        // 设备名与分辨率都相同才视为同一块屏；句柄变化说明需要重建会话
+        bool sameMonitor = monitor.DeviceName == Monitor.DeviceName
+            && monitor.Width == Monitor.Width
+            && monitor.Height == Monitor.Height;
+
+        if (sameMonitor && monitor.Handle == Monitor.Handle)
         {
+            if (!_running)
+            {
+                // 热插拔时被 Stop 过，屏回来后先尝试原会话重启
+                Source.StartCapture();
+                _running = true;
+                return true;
+            }
+
             return false;
         }
 
@@ -78,6 +118,7 @@ internal sealed class CaptureSession : IDisposable
 
         Source = candidate;
         Monitor = monitor;
+        _running = true;
 
         Retire(previous);
         return true;

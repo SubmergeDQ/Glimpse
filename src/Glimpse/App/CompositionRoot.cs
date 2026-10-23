@@ -104,9 +104,6 @@ internal static class CompositionRoot
 
         // 设备优先使用系统高性能适配器；按显示器选适配器在混合显卡机器上可能选到核显，
         // DirectComposition 内容无法合成到预览输出，表现为预览窗全黑。
-        using GpuDevice gpu = D3D11Interop.CreateDevice(previewMonitor.Handle);
-        log.WriteLine($"[GPU] {gpu.AdapterName}，特性级别 {gpu.FeatureLevel}");
-
         var stats = new FrameStats();
         var captureLatency = new LatencyMonitor();
         var presentLatency = new LatencyMonitor();
@@ -114,6 +111,7 @@ internal static class CompositionRoot
         var reporter = new StatsReporter(stats, captureLatency, presentLatency, log, liveStats);
         var benchmark = new BenchmarkRunner(stats, captureLatency, presentLatency);
 
+        GpuDevice? gpu = null;
         CaptureSession? session = null;
         PreviewWindow? window = null;
         StatsOverlayWindow? overlay = null;
@@ -121,10 +119,17 @@ internal static class CompositionRoot
         RenderLoop? loop = null;
         GlobalHotKey? exitHotKey = null;
         TrayIconHost? tray = null;
+        System.Windows.Forms.Timer? healthTimer = null;
+        System.Windows.Forms.Timer? displayDebounce = null;
         bool exiting = false;
+        bool recovering = false;
+        int recoverAttempts = 0;
 
         try
         {
+            gpu = D3D11Interop.CreateDevice(previewMonitor.Handle);
+            log.WriteLine($"[GPU] {gpu.AdapterName}，特性级别 {gpu.FeatureLevel}");
+
             session = new CaptureSession(gpu, sourceMonitor, clock, stats, captureLatency, log);
             WgcFrameSource source = session.Source;
 
@@ -392,6 +397,166 @@ internal static class CompositionRoot
                 log.WriteLine($"[切换] 已切换到显示器 #{monitor.Index}，窗口 {nextWidth}x{nextHeight}");
             }
 
+            // 设备丢失后由健康检查触发：停掉整条链路，重建设备、采集会话与呈现器
+            void RecoverPipeline()
+            {
+                if (recovering || exiting)
+                {
+                    return;
+                }
+
+                recovering = true;
+                recoverAttempts++;
+
+                try
+                {
+                    log.WriteLine($"[恢复] 检测到设备丢失，重建 D3D 栈（第 {recoverAttempts} 次尝试）");
+
+                    loop?.Dispose();
+                    loop = null;
+
+                    session?.Dispose();
+                    session = null;
+
+                    host?.Dispose();
+                    host = null;
+
+                    gpu?.Dispose();
+                    gpu = null;
+
+                    gpu = D3D11Interop.CreateDevice(previewMonitor.Handle);
+
+                    activeSession = new CaptureSession(gpu, sourceMonitor, clock, stats, captureLatency, log);
+                    session = activeSession;
+
+                    (int clientWidth, int clientHeight) =
+                        WindowPlacement.GetClientSize(previewWindow.Handle);
+                    previewHost = new D3DPreviewHost(
+                        gpu,
+                        previewWindow.Handle,
+                        clientWidth,
+                        clientHeight,
+                        stats,
+                        log);
+                    host = previewHost;
+                    previewWindow.AttachHost(previewHost);
+                    previewWindow.SetSourceSize(
+                        activeSession.Source.FrameSize.Width,
+                        activeSession.Source.FrameSize.Height);
+
+                    activeLoop = new RenderLoop(
+                        activeSession.Source,
+                        previewHost,
+                        clock,
+                        presentLatency,
+                        reporter,
+                        log,
+                        () => !previewHost.IsFaulted);
+                    loop = activeLoop;
+
+                    activeSession.Start();
+                    activeLoop.Start();
+
+                    recoverAttempts = 0;
+                    if (healthTimer is not null)
+                    {
+                        healthTimer.Interval = 1000;
+                    }
+
+                    log.WriteLine("[恢复] D3D 栈重建完成");
+                }
+                catch (Exception ex)
+                {
+                    log.WriteLine($"[恢复] 重建失败：{ex}");
+
+                    if (healthTimer is not null)
+                    {
+                        // 设备持续不可用时退避重试，避免每秒重建
+                        healthTimer.Interval = Math.Clamp(recoverAttempts * 2, 2, 30) * 1000;
+                    }
+                }
+                finally
+                {
+                    recovering = false;
+                }
+            }
+
+            // 显示配置变化：重新枚举并按设备名匹配，源丢失时切到主屏
+            void HandleDisplayChange()
+            {
+                IReadOnlyList<MonitorDescriptor> current = new MonitorEnumerator().Enumerate();
+                if (current.Count == 0)
+                {
+                    log.WriteLine("[热插拔] 重新枚举后没有可用显示器");
+                    return;
+                }
+
+                monitors = current;
+
+                MonitorDescriptor? source = current.FirstOrDefault(monitor =>
+                    monitor.DeviceName == sourceMonitor.DeviceName
+                    && monitor.Width == sourceMonitor.Width
+                    && monitor.Height == sourceMonitor.Height);
+
+                if (source is null)
+                {
+                    // 设备名被移除或重新分配给其他显示器：停止捕获、保留最后一帧，等用户选源
+                    if (activeSession.IsRunning)
+                    {
+                        activeSession.Stop();
+                    }
+
+                    log.WriteLine(
+                        $"[热插拔] 源屏 {sourceMonitor.DeviceName} 已断开，等待用户从托盘选择新源");
+                    tray?.SetStatusText($"源屏已断开 · 预览 #{previewMonitor.Index}");
+                }
+                else
+                {
+                    // 同一块屏回来了：Stop 过的会话会重启，句柄变化则重建
+                    SwitchSource(source);
+                }
+
+                MonitorDescriptor? preview = current.FirstOrDefault(
+                    monitor => monitor.DeviceName == previewMonitor.DeviceName);
+
+                if (preview is null)
+                {
+                    preview = current.FirstOrDefault(monitor => monitor.IsPrimary) ?? current[0];
+                    log.WriteLine($"[热插拔] 预览屏已断开，移回 #{preview.Index}");
+                }
+
+                previewMonitor = preview;
+
+                (int x, int y, int width, int height) = WindowPlacement.GetBounds(previewWindow.Handle);
+                (int nextX, int nextY, int nextWidth, int nextHeight) = PreviewLayout.FitToMonitor(
+                    x,
+                    y,
+                    width,
+                    height,
+                    activeSession.Source.FrameSize.Width,
+                    activeSession.Source.FrameSize.Height,
+                    previewMonitor);
+                WindowPlacement.Place(previewWindow.Handle, nextX, nextY, nextWidth, nextHeight);
+
+                tray?.SetStatusText($"捕获 #{sourceMonitor.Index} · 预览 #{previewMonitor.Index}");
+            }
+
+            // WM_DISPLAYCHANGE 会连续到达多次，等显示配置稳定后再处理
+            previewWindow.DisplayChanged += () =>
+            {
+                displayDebounce?.Stop();
+                displayDebounce?.Dispose();
+                displayDebounce = new System.Windows.Forms.Timer { Interval = 1200 };
+                displayDebounce.Tick += (_, _) =>
+                {
+                    displayDebounce?.Stop();
+                    displayDebounce?.Dispose();
+                    displayDebounce = null;
+                    HandleDisplayChange();
+                };
+                displayDebounce.Start();
+            };
+
             tray = new TrayIconHost(
                 logDirectory,
                 $"捕获 #{sourceMonitor.Index} · 预览 #{previewMonitor.Index}",
@@ -438,7 +603,7 @@ internal static class CompositionRoot
 
             try
             {
-                session.Source.StartCapture();
+                session.Start();
                 activeLoop.Start();
             }
             catch (Exception ex)
@@ -454,16 +619,44 @@ internal static class CompositionRoot
                 RunBenchmark(TimeSpan.FromSeconds(benchmarkSeconds), silent: true);
             }
 
+            if (options.FaultSimulationSeconds is int faultSeconds && faultSeconds > 0)
+            {
+                // 诊断参数：定时标记呈现链路失效，用于验证设备丢失重建
+                var faultTimer = new System.Windows.Forms.Timer { Interval = faultSeconds * 1000 };
+                faultTimer.Tick += (_, _) =>
+                {
+                    faultTimer.Stop();
+                    faultTimer.Dispose();
+                    previewHost.SimulateFault();
+                };
+                faultTimer.Start();
+            }
+
+            healthTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+            healthTimer.Tick += (_, _) =>
+            {
+                if (previewHost.IsFaulted)
+                {
+                    RecoverPipeline();
+                }
+            };
+            healthTimer.Start();
+
             Application.Run(previewWindow);
         }
         finally
         {
             // 关闭顺序必须与创建相反：先移除托盘，再停渲染，最后停采集与呈现
+            healthTimer?.Stop();
+            healthTimer?.Dispose();
+            displayDebounce?.Stop();
+            displayDebounce?.Dispose();
             tray?.Dispose();
             loop?.Dispose();
             session?.Dispose();
             overlay?.Dispose();
             host?.Dispose();
+            gpu?.Dispose();
             exitHotKey?.Dispose();
         }
 

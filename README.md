@@ -48,7 +48,7 @@ src\Glimpse\bin\x64\Debug\net8.0-windows10.0.22621.0\Glimpse.exe --source 0 --pr
 - 基准测试：托盘菜单运行 60 秒，或 `Glimpse.exe --benchmark 60` 无人值守运行后自动退出；报告写入日志目录
 - 诊断日志：`%LOCALAPPDATA%\Glimpse\logs\glimpse.log`
 
-当前限制：源屏/预览屏可用启动参数指定，托盘可切换预览显示与退出；点击穿透暂不可用，DirectComposition 窗口无法在保留画面的同时让输入穿透，原因与解决方向见开发文档风险清单；HDR 源会先按 SDR 输出；设备丢失与显示器热插拔留到 M3。
+当前限制：源屏/预览屏可用启动参数指定，托盘可切换预览显示与退出；点击穿透暂不可用，DirectComposition 窗口无法在保留画面的同时让输入穿透，原因与解决方向见开发文档风险清单；HDR 源会先按 SDR 输出；跨屏 DPI 与 1 小时长稳留到 M3 收尾。
 
 ## 文档
 
