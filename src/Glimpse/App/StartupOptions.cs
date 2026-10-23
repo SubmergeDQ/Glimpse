@@ -7,15 +7,17 @@ namespace Glimpse.App;
 internal readonly record struct MonitorSelection(MonitorDescriptor Source, MonitorDescriptor Preview);
 
 /// <summary>
-/// 启动参数。没有设置界面时，用 <c>--source</c> / <c>--preview</c> 指定显示器序号，
-/// <c>--benchmark 60</c> 表示启动后自动跑指定秒数的基准测试并退出。
+/// 启动参数。用 <c>--source</c> / <c>--preview</c> 指定显示器序号，
+/// <c>--benchmark 60</c> 表示启动后自动跑指定秒数的基准测试并退出，
+/// <c>--panel</c> 表示启动后直接打开主控面板。
 /// 例如在副屏看主屏：<c>Glimpse.exe --source 0 --preview 1</c>。
 /// </summary>
 internal sealed record StartupOptions(
     int? SourceMonitorIndex,
     int? PreviewMonitorIndex,
     int? BenchmarkSeconds = null,
-    int? FaultSimulationSeconds = null)
+    int? FaultSimulationSeconds = null,
+    bool ShowPanel = false)
 {
     public static StartupOptions Parse(IReadOnlyList<string> args)
     {
@@ -23,10 +25,17 @@ internal sealed record StartupOptions(
         int? previewIndex = null;
         int? benchmarkSeconds = null;
         int? faultSimulationSeconds = null;
+        bool showPanel = false;
 
         for (int position = 0; position < args.Count; position++)
         {
             string argument = args[position];
+            if (argument == "--panel")
+            {
+                showPanel = true;
+                continue;
+            }
+
             bool isSource = argument == "--source";
             bool isPreview = argument == "--preview";
             bool isBenchmark = argument == "--benchmark";
@@ -61,7 +70,7 @@ internal sealed record StartupOptions(
             position++;
         }
 
-        return new StartupOptions(sourceIndex, previewIndex, benchmarkSeconds, faultSimulationSeconds);
+        return new StartupOptions(sourceIndex, previewIndex, benchmarkSeconds, faultSimulationSeconds, showPanel);
     }
 
     /// <summary>

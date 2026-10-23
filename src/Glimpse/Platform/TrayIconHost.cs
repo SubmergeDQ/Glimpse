@@ -46,6 +46,7 @@ internal sealed class TrayIconHost : IDisposable
         Func<bool> isOverlayVisible,
         Action togglePreview,
         Action toggleOverlay,
+        Action openPanel,
         Action exit,
         Action runBenchmark,
         Func<IReadOnlyList<TrayMonitorItem>> monitors,
@@ -84,6 +85,9 @@ internal sealed class TrayIconHost : IDisposable
             RefreshPreviewItem();
         };
 
+        var panelItem = new ToolStripMenuItem("打开面板");
+        panelItem.Click += (_, _) => openPanel();
+
         var logItem = new ToolStripMenuItem("打开日志目录");
         logItem.Click += (_, _) => OpenDirectory(logDirectory);
 
@@ -96,6 +100,7 @@ internal sealed class TrayIconHost : IDisposable
         _menu = new ContextMenuStrip();
         _menu.Items.Add(_statusItem);
         _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add(panelItem);
         _menu.Items.Add(_sourceItem);
         _menu.Items.Add(_previewItem);
         _menu.Items.Add(_overlayItem);
@@ -119,17 +124,8 @@ internal sealed class TrayIconHost : IDisposable
             Visible = true,
             ContextMenuStrip = _menu,
         };
-        // 双击只在隐藏时恢复预览，已显示时不做切换，避免误触隐藏
-        _notifyIcon.DoubleClick += (_, _) =>
-        {
-            if (_isPreviewVisible())
-            {
-                return;
-            }
-
-            togglePreview();
-            RefreshPreviewItem();
-        };
+        // 双击托盘打开主控面板；面板隐藏时也走同一入口
+        _notifyIcon.DoubleClick += (_, _) => openPanel();
     }
 
     public void SetClickThrough(bool enabled)
@@ -161,7 +157,7 @@ internal sealed class TrayIconHost : IDisposable
 
     public void SetBenchmarkEnabled(bool enabled) => _benchmarkItem.Enabled = enabled;
 
-    private static void OpenDirectory(string path)
+    internal static void OpenDirectory(string path)
     {
         if (Directory.Exists(path))
         {

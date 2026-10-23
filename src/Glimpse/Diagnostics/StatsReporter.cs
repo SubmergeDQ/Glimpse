@@ -32,7 +32,13 @@ internal sealed class StatsReporter
         LatencySnapshot capture = _captureLatency.TakeSnapshot();
         LatencySnapshot present = _presentLatency.TakeSnapshot();
 
-        _liveStats?.Publish(frames.Presented, present.P95, frames.Presented > 0);
+        _liveStats?.Publish(
+            frames.Captured,
+            frames.Presented,
+            capture.P95,
+            present.P95,
+            frames.Dropped,
+            frames.Presented > 0);
 
         _log.WriteLine(
             $"{DateTime.Now:HH:mm:ss} " +

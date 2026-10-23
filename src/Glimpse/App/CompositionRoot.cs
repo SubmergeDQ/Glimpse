@@ -51,6 +51,7 @@ internal static class CompositionRoot
     private static void RunCore(DiagnosticsLog log, StartupOptions options, SingleInstance instance)
     {
         string version = typeof(CompositionRoot).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+        string logDirectory = Path.GetDirectoryName(log.LogFilePath) ?? string.Empty;
         log.WriteLine($"Glimpse {version} 启动（{DateTime.Now:yyyy-MM-dd HH:mm:ss}），日志：{log.LogFilePath}");
 
         SettingsStore settingsStore = SettingsStore.CreateDefault();
@@ -114,6 +115,7 @@ internal static class CompositionRoot
         GpuDevice? gpu = null;
         CaptureSession? session = null;
         PreviewWindow? window = null;
+        MainPanelWindow? panel = null;
         StatsOverlayWindow? overlay = null;
         D3DPreviewHost? host = null;
         RenderLoop? loop = null;
@@ -123,6 +125,7 @@ internal static class CompositionRoot
         System.Windows.Forms.Timer? displayDebounce = null;
         bool exiting = false;
         bool recovering = false;
+        bool captureExcluded = false;
         int recoverAttempts = 0;
 
         try
@@ -148,7 +151,11 @@ internal static class CompositionRoot
                 source.FrameSize,
                 monitors);
             WindowPlacement.Place(windowHandle, x, y, width, height);
-            log.WriteLine($"[窗口] 位置 ({x},{y}) {width}x{height}");
+
+            // WinForms 的 TopMost 属性有时不会落到 WS_EX_TOPMOST 上，这里显式置顶一次
+            WindowPlacement.BringToFront(windowHandle);
+            log.WriteLine(
+                $"[窗口] 位置 ({x},{y}) {width}x{height}，置顶={WindowPlacement.IsTopMost(windowHandle)}");
 
             (int clientWidth, int clientHeight) = WindowPlacement.GetClientSize(windowHandle);
             host = new D3DPreviewHost(gpu, windowHandle, clientWidth, clientHeight, stats, log);
@@ -193,6 +200,9 @@ internal static class CompositionRoot
                 if (visible)
                 {
                     previewWindow.Show();
+
+                    // 重新显示时再显式置顶，避免 TopMost 属性未落到原生样式
+                    WindowPlacement.BringToFront(previewWindow.Handle);
                     if (overlayEnabled)
                     {
                         ShowOverlay();
@@ -267,8 +277,7 @@ internal static class CompositionRoot
                 // 事件在后台线程触发，切回 UI 线程再操作窗口
                 previewWindow.BeginInvoke(() =>
                 {
-                    SetPreviewVisible(true);
-                    WindowPlacement.BringToFront(previewWindow.Handle);
+                    OpenPanel();
                     log.WriteLine("[单实例] 已响应第二个实例的激活请求");
                 });
             });
@@ -292,8 +301,6 @@ internal static class CompositionRoot
                     previewWindow.Hide();
                 }
             };
-
-            string logDirectory = Path.GetDirectoryName(log.LogFilePath) ?? string.Empty;
 
             async void RunBenchmark(TimeSpan duration, bool silent)
             {
@@ -346,6 +353,34 @@ internal static class CompositionRoot
                 {
                     tray?.SetBenchmarkEnabled(true);
                 }
+            }
+
+            void OpenPanel()
+            {
+                if (panel is null || panel.IsDisposed)
+                {
+                    panel = new MainPanelWindow(
+                        version,
+                        log.LogFilePath ?? string.Empty,
+                        liveStats,
+                        () => sourceMonitor,
+                        () => previewMonitor,
+                        () => gpu?.AdapterName ?? "—",
+                        () => captureExcluded,
+                        () => WindowPlacement.GetClientSize(previewWindow.Handle),
+                        () => TrayIconHost.OpenDirectory(logDirectory),
+                        () => RunBenchmark(TimeSpan.FromSeconds(60), silent: false));
+                }
+
+                panel.Show();
+                if (panel.WindowState == FormWindowState.Minimized)
+                {
+                    panel.WindowState = FormWindowState.Normal;
+                }
+
+                // 预览窗常驻置顶，面板自身也临时置顶，激活后位于预览窗之上
+                WindowPlacement.SetTopMost(panel.Handle, true);
+                panel.Activate();
             }
 
             loop = new RenderLoop(
@@ -570,6 +605,7 @@ internal static class CompositionRoot
                 () => overlayEnabled,
                 TogglePreview,
                 ToggleOverlay,
+                () => OpenPanel(),
                 RequestExit,
                 () => RunBenchmark(TimeSpan.FromSeconds(60), silent: false),
                 () => monitors
@@ -582,7 +618,8 @@ internal static class CompositionRoot
 
             log.WriteLine("[托盘] 已创建，关闭窗口将收进托盘");
 
-            if (WindowCaptureExclusion.Apply(windowHandle))
+            captureExcluded = WindowCaptureExclusion.Apply(windowHandle);
+            if (captureExcluded)
             {
                 log.WriteLine("[窗口] 已从屏幕捕获中排除");
             }
@@ -616,6 +653,12 @@ internal static class CompositionRoot
                 log.WriteLine($"[启动] 采集启动失败：{ex}");
                 exiting = true;
                 previewWindow.Close();
+            }
+
+            if (options.ShowPanel && !exiting)
+            {
+                OpenPanel();
+                log.WriteLine("[面板] 已按启动参数打开主控面板");
             }
 
             if (options.BenchmarkSeconds is int benchmarkSeconds && benchmarkSeconds > 0)
@@ -657,6 +700,7 @@ internal static class CompositionRoot
             displayDebounce?.Stop();
             displayDebounce?.Dispose();
             tray?.Dispose();
+            panel?.Dispose();
             loop?.Dispose();
             session?.Dispose();
             overlay?.Dispose();

@@ -91,6 +91,15 @@ public sealed class StartupOptionsTests
     }
 
     [Fact]
+    public void ParseReadsPanelFlag()
+    {
+        StartupOptions options = StartupOptions.Parse(["--panel", "--source", "1"]);
+
+        Assert.True(options.ShowPanel);
+        Assert.Equal(1, options.SourceMonitorIndex);
+    }
+
+    [Fact]
     public void SettingsDeviceNameWinsOverSavedIndex()
     {
         // 设备名指向副屏，序号指向主屏，配置损坏时以设备名为准
