@@ -80,6 +80,7 @@ internal static class D3D11Interop
 
         IDXGIAdapter1? selectedAdapter = TryGetHighPerformanceAdapter();
         string adapterName = "未知适配器";
+        string adapterSelection = "高性能推荐";
         Luid adapterLuid = default;
 
         if (selectedAdapter is null
@@ -88,6 +89,7 @@ internal static class D3D11Interop
             && matched is not null)
         {
             selectedAdapter = matched;
+            adapterSelection = "显示器所属（降级）";
         }
 
         if (selectedAdapter is not null)
@@ -107,6 +109,7 @@ internal static class D3D11Interop
 
             adapterName = selectedAdapter.Description1.Description;
             adapterLuid = selectedAdapter.Description1.Luid;
+            adapterSelection = "首个可用（降级）";
         }
 
         try
@@ -141,7 +144,7 @@ internal static class D3D11Interop
                 throw new InvalidOperationException("D3D11CreateDevice 未返回有效设备。");
             }
 
-            return new GpuDevice(device, context, featureLevel, adapterName, adapterLuid);
+            return new GpuDevice(device, context, featureLevel, adapterName, adapterLuid, adapterSelection);
         }
         finally
         {

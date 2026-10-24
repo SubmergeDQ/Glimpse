@@ -109,9 +109,9 @@ internal static class WindowInterop
             SwpNoMove | SwpNoSize | SwpNoZOrder | SwpNoActivate | SwpFrameChanged);
     }
 
-    /// <summary>隐藏窗口内容，使其不出现在任何屏幕捕获结果中。</summary>
-    public static bool SetCaptureExclusion(IntPtr hwnd) =>
-        SetWindowDisplayAffinity(hwnd, WdaExcludeFromCapture);
+    /// <summary>设置窗口是否从屏幕捕获中排除；false 时恢复为可捕获。</summary>
+    public static bool SetCaptureExclusion(IntPtr hwnd, bool exclude) =>
+        SetWindowDisplayAffinity(hwnd, exclude ? WdaExcludeFromCapture : 0u);
 
     /// <summary>按物理像素设置窗口位置与尺寸，并保持置顶。</summary>
     public static void PlaceWindow(IntPtr hwnd, int x, int y, int width, int height)

@@ -10,6 +10,7 @@ internal enum TrayIconState
 {
     Normal,
     ClickThrough,
+    Paused,
 }
 
 /// <summary>托盘里的一个捕获源选项。</summary>
@@ -23,6 +24,7 @@ internal sealed class TrayIconHost : IDisposable
 {
     private static readonly Color NormalColor = Color.FromArgb(232, 235, 240);
     private static readonly Color ClickThroughColor = Color.FromArgb(242, 169, 59);
+    private static readonly Color PausedColor = Color.FromArgb(138, 145, 156);
 
     private readonly NotifyIcon _notifyIcon;
     private readonly ContextMenuStrip _menu;
@@ -31,9 +33,11 @@ internal sealed class TrayIconHost : IDisposable
     private readonly ToolStripMenuItem _clickThroughItem;
     private readonly ToolStripMenuItem _previewItem;
     private readonly ToolStripMenuItem _overlayItem;
+    private readonly ToolStripMenuItem _pauseItem;
     private readonly ToolStripMenuItem _benchmarkItem;
     private readonly Func<bool> _isPreviewVisible;
     private readonly Func<bool> _isOverlayVisible;
+    private readonly Func<bool> _isPaused;
     private readonly Func<IReadOnlyList<TrayMonitorItem>> _monitors;
     private readonly Dictionary<TrayIconState, IconHandle> _icons = new();
     private bool _disposed;
@@ -44,8 +48,10 @@ internal sealed class TrayIconHost : IDisposable
         Action toggleClickThrough,
         Func<bool> isPreviewVisible,
         Func<bool> isOverlayVisible,
+        Func<bool> isPaused,
         Action togglePreview,
         Action toggleOverlay,
+        Action togglePause,
         Action openPanel,
         Action exit,
         Action runBenchmark,
@@ -54,6 +60,7 @@ internal sealed class TrayIconHost : IDisposable
     {
         _icons[TrayIconState.Normal] = CreateIcon(NormalColor);
         _icons[TrayIconState.ClickThrough] = CreateIcon(ClickThroughColor);
+        _icons[TrayIconState.Paused] = CreateIcon(PausedColor);
 
         _statusItem = new ToolStripMenuItem(statusText) { Enabled = false };
         _monitors = monitors;
@@ -85,6 +92,14 @@ internal sealed class TrayIconHost : IDisposable
             RefreshPreviewItem();
         };
 
+        _isPaused = isPaused;
+        _pauseItem = new ToolStripMenuItem("暂停监看");
+        _pauseItem.Click += (_, _) =>
+        {
+            togglePause();
+            RefreshPauseItem();
+        };
+
         var panelItem = new ToolStripMenuItem("打开面板");
         panelItem.Click += (_, _) => openPanel();
 
@@ -101,6 +116,7 @@ internal sealed class TrayIconHost : IDisposable
         _menu.Items.Add(_statusItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(panelItem);
+        _menu.Items.Add(_pauseItem);
         _menu.Items.Add(_sourceItem);
         _menu.Items.Add(_previewItem);
         _menu.Items.Add(_overlayItem);
@@ -115,6 +131,7 @@ internal sealed class TrayIconHost : IDisposable
         {
             RefreshPreviewItem();
             RefreshOverlayItem();
+            RefreshPauseItem();
         };
 
         _notifyIcon = new NotifyIcon
@@ -139,6 +156,17 @@ internal sealed class TrayIconHost : IDisposable
         _previewItem.Text = _isPreviewVisible() ? "隐藏预览" : "显示预览";
 
     private void RefreshOverlayItem() => _overlayItem.Checked = _isOverlayVisible();
+
+    private void RefreshPauseItem() =>
+        _pauseItem.Text = _isPaused() ? "继续监看" : "暂停监看";
+
+    /// <summary>暂停状态同时反映到图标颜色与悬浮文本。</summary>
+    public void SetPaused(bool paused)
+    {
+        _notifyIcon.Icon = _icons[paused ? TrayIconState.Paused : TrayIconState.Normal].Icon;
+        _notifyIcon.Text = paused ? "Glimpse · 已暂停" : "Glimpse";
+        RefreshPauseItem();
+    }
 
     /// <summary>每次展开时重建，保证勾选状态与当前捕获会话一致。</summary>
     private void RebuildSourceMenu()

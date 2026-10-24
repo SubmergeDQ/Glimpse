@@ -24,8 +24,20 @@ internal sealed class CaptureSession : IDisposable
 
     private bool _running;
     private bool _disposed;
+    private bool _cursorCaptureEnabled = true;
 
     public bool IsRunning => _running;
+
+    /// <summary>是否把系统光标画进捕获帧，切换后立即作用于当前与后续会话。</summary>
+    public bool IsCursorCaptureEnabled
+    {
+        get => _cursorCaptureEnabled;
+        set
+        {
+            _cursorCaptureEnabled = value;
+            Source.IsCursorCaptureEnabled = value;
+        }
+    }
 
     public CaptureSession(
         GpuDevice gpu,
@@ -124,8 +136,12 @@ internal sealed class CaptureSession : IDisposable
         return true;
     }
 
-    private WgcFrameSource Create(MonitorDescriptor monitor) =>
-        new(_gpu, monitor, _clock, _stats, _latency, _log);
+    private WgcFrameSource Create(MonitorDescriptor monitor)
+    {
+        var source = new WgcFrameSource(_gpu, monitor, _clock, _stats, _latency, _log);
+        source.IsCursorCaptureEnabled = _cursorCaptureEnabled;
+        return source;
+    }
 
     private void Retire(WgcFrameSource source)
     {

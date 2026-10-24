@@ -2,6 +2,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Text;
 using Glimpse.Abstractions.Configuration;
 using Glimpse.Abstractions.Display;
 using Glimpse.Diagnostics;
@@ -46,6 +47,9 @@ internal sealed class MainPanelWindow : Form
     private const int ResizeBorder = 6;
     private const int WideThreshold = 1280;
     private const int BlockHeadHeight = 34;
+    private const int CollapsedWidth = 520;
+    private const int CollapsedHeight = 52;
+    private const int CollapsedBottomMargin = 12;
 
     private enum PanelView
     {
@@ -67,8 +71,13 @@ internal sealed class MainPanelWindow : Form
         ToggleDrawer,
         RunBenchmark,
         SwapDirection,
+        Reenumerate,
+        TogglePause,
+        ToggleCursorCapture,
+        ToggleSelfCapture,
         TogglePreview,
         ToggleOverlay,
+        ToggleTopMost,
         Scale25,
         Scale50,
         Scale75,
@@ -81,6 +90,16 @@ internal sealed class MainPanelWindow : Form
         Duration15,
         Duration60,
         Duration300,
+        CopyDiagnostics,
+        ExportDiagnostics,
+        Collapse,
+        Expand,
+        OnboardSkip,
+        OnboardPrev,
+        OnboardNext,
+        OnboardStart,
+        OnboardFinish,
+        StopBenchmark,
     }
 
     private readonly record struct CardKey(int Index, bool Source)
@@ -128,10 +147,19 @@ internal sealed class MainPanelWindow : Form
     private readonly Action<MonitorDescriptor> _selectSource;
     private readonly Action<MonitorDescriptor> _selectPreview;
     private readonly Action _swapDirection;
+    private readonly Action _reenumerate;
+    private readonly Func<bool> _isPaused;
+    private readonly Action _togglePause;
+    private readonly Func<bool> _isCursorCaptured;
+    private readonly Action<bool> _setCursorCaptured;
+    private readonly Func<bool> _isSelfCaptured;
+    private readonly Action<bool> _setSelfCaptured;
     private readonly Func<bool> _isPreviewVisible;
     private readonly Action _togglePreview;
     private readonly Func<bool> _isOverlayVisible;
     private readonly Action _toggleOverlay;
+    private readonly Func<bool> _isTopMost;
+    private readonly Action<bool> _setTopMost;
     private readonly Func<int> _previewScale;
     private readonly Action<int> _setPreviewScale;
     private readonly Func<PreviewAnchor> _previewAnchor;
@@ -145,8 +173,18 @@ internal sealed class MainPanelWindow : Form
     private readonly Func<(int Width, int Height)> _previewSize;
     private readonly Action _openLogDirectory;
     private readonly Action _runBenchmark;
+    private readonly string[] _exitShortcutKeys;
+    private readonly string[] _pauseShortcutKeys;
+    private readonly Func<IReadOnlyList<DiagnosticEntry>> _diagnostics;
+    private readonly Func<int, string[]> _readLogTail;
+    private readonly Func<string, string?> _exportDiagnostics;
+    private readonly Func<bool> _adapterFallback;
+    private readonly Func<bool> _shouldOnboard;
+    private readonly Action _completeOnboarding;
+    private readonly Action _stopBenchmark;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly System.Windows.Forms.Timer _statusTimer;
+    private readonly System.Windows.Forms.Timer _animationTimer;
     private readonly List<double> _p95History = new(60);
 
     private PanelView _view = PanelView.Monitor;
@@ -170,61 +208,65 @@ internal sealed class MainPanelWindow : Form
     private bool _benchmarkRunning;
     private DateTime _benchmarkStartedAt;
     private int _benchmarkRunSeconds = 60;
+    private IReadOnlyList<DiagnosticEntry> _diagnosticsSnapshot = [];
+    private string[] _logLines = [];
+    private int _logScroll;
+    private long _logLoadedAt;
+    private string? _diagnosticsNotice;
+    private DateTime _diagnosticsNoticeAt;
+    private bool _collapsed;
+    private (int X, int Y, int Width, int Height) _expandedBounds;
+    private bool _onboardingChecked;
+    private int _onboardingStep = -1;
+    private bool _onboardRunStarted;
+    private double _linkPhase;
 
-    public MainPanelWindow(
-        string version,
-        string logFilePath,
-        LiveStatsChannel stats,
-        PanelStatusChannel statusChannel,
-        Func<MonitorDescriptor> sourceMonitor,
-        Func<MonitorDescriptor> previewMonitor,
-        Func<IReadOnlyList<MonitorDescriptor>> monitors,
-        Action<MonitorDescriptor> selectSource,
-        Action<MonitorDescriptor> selectPreview,
-        Action swapDirection,
-        Func<bool> previewVisible,
-        Action togglePreview,
-        Func<bool> overlayVisible,
-        Action toggleOverlay,
-        Func<int> previewScale,
-        Action<int> setPreviewScale,
-        Func<PreviewAnchor> previewAnchor,
-        Action<PreviewAnchor> setPreviewAnchor,
-        Action<int, Action<BenchmarkResult?, string?>> startBenchmark,
-        Func<int> testDuration,
-        Action<int> setTestDuration,
-        Func<string> adapterName,
-        Func<bool> captureExcluded,
-        Func<(int Width, int Height)> previewSize,
-        Action openLogDirectory,
-        Action runBenchmark)
+    public MainPanelWindow(PanelBindings bindings)
     {
-        _stats = stats;
-        _statusChannel = statusChannel;
-        _version = version;
-        _logFilePath = logFilePath;
-        _sourceMonitor = sourceMonitor;
-        _previewMonitor = previewMonitor;
-        _monitors = monitors;
-        _selectSource = selectSource;
-        _selectPreview = selectPreview;
-        _swapDirection = swapDirection;
-        _isPreviewVisible = previewVisible;
-        _togglePreview = togglePreview;
-        _isOverlayVisible = overlayVisible;
-        _toggleOverlay = toggleOverlay;
-        _previewScale = previewScale;
-        _setPreviewScale = setPreviewScale;
-        _previewAnchor = previewAnchor;
-        _setPreviewAnchor = setPreviewAnchor;
-        _startBenchmark = startBenchmark;
-        _testDuration = testDuration;
-        _setTestDuration = setTestDuration;
-        _adapterName = adapterName;
-        _captureExcluded = captureExcluded;
-        _previewSize = previewSize;
-        _openLogDirectory = openLogDirectory;
-        _runBenchmark = runBenchmark;
+        _stats = bindings.Stats;
+        _statusChannel = bindings.Status;
+        _version = bindings.Version;
+        _logFilePath = bindings.LogFilePath;
+        _sourceMonitor = bindings.SourceMonitor;
+        _previewMonitor = bindings.PreviewMonitor;
+        _monitors = bindings.Monitors;
+        _selectSource = bindings.SelectSource;
+        _selectPreview = bindings.SelectPreview;
+        _swapDirection = bindings.SwapDirection;
+        _reenumerate = bindings.Reenumerate;
+        _isPaused = bindings.IsPaused;
+        _togglePause = bindings.TogglePause;
+        _isCursorCaptured = bindings.IsCursorCaptured;
+        _setCursorCaptured = bindings.SetCursorCaptured;
+        _isSelfCaptured = bindings.IsSelfCaptured;
+        _setSelfCaptured = bindings.SetSelfCaptured;
+        _isPreviewVisible = bindings.IsPreviewVisible;
+        _togglePreview = bindings.TogglePreview;
+        _isOverlayVisible = bindings.IsOverlayVisible;
+        _toggleOverlay = bindings.ToggleOverlay;
+        _isTopMost = bindings.IsTopMost;
+        _setTopMost = bindings.SetTopMost;
+        _previewScale = bindings.PreviewScale;
+        _setPreviewScale = bindings.SetPreviewScale;
+        _previewAnchor = bindings.PreviewAnchor;
+        _setPreviewAnchor = bindings.SetPreviewAnchor;
+        _startBenchmark = bindings.StartBenchmark;
+        _testDuration = bindings.TestDuration;
+        _setTestDuration = bindings.SetTestDuration;
+        _adapterName = bindings.AdapterName;
+        _captureExcluded = bindings.CaptureExcluded;
+        _previewSize = bindings.PreviewSize;
+        _openLogDirectory = bindings.OpenLogDirectory;
+        _runBenchmark = bindings.RunBenchmark;
+        _exitShortcutKeys = bindings.ExitShortcutKeys;
+        _pauseShortcutKeys = bindings.PauseShortcutKeys;
+        _diagnostics = bindings.Diagnostics;
+        _readLogTail = bindings.ReadLogTail;
+        _exportDiagnostics = bindings.ExportDiagnostics;
+        _adapterFallback = bindings.AdapterFallback;
+        _shouldOnboard = bindings.ShouldOnboard;
+        _completeOnboarding = bindings.CompleteOnboarding;
+        _stopBenchmark = bindings.StopBenchmark;
 
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
@@ -250,10 +292,27 @@ internal sealed class MainPanelWindow : Form
 
         _benchmarkTimer = new System.Windows.Forms.Timer { Interval = 400 };
         _benchmarkTimer.Tick += (_, _) => Invalidate();
+
+        // 链路上的黄点单独走 60ms 节拍，比读数刷新更顺滑；不可见视图里直接跳过重绘
+        _animationTimer = new System.Windows.Forms.Timer { Interval = 60 };
+        _animationTimer.Tick += (_, _) => AdvanceLinkAnimation();
     }
 
     /// <summary>供组合根在切换输出参数后立即刷新读数与选中态。</summary>
     public void RefreshNow() => RefreshStats();
+
+    /// <summary>
+    /// 显示之后再切换 TopMost：WinForms 构造期设置的 TopMost 不会落到 WS_EX_TOPMOST。
+    /// 面板与预览窗都置顶时，谁最后被激活谁在上层。
+    /// </summary>
+    public void SetTopMostEnabled(bool enabled)
+    {
+        TopMost = false;
+        if (enabled)
+        {
+            TopMost = true;
+        }
+    }
 
     private int Dpi => _dpi > 0 ? _dpi : Math.Max(DpiScaling.DefaultDpi, DeviceDpi);
 
@@ -285,7 +344,8 @@ internal sealed class MainPanelWindow : Form
         MainRect.Width - S(36),
         S(44));
 
-    private bool ShowBanner => _status.Kind != PanelStatusKind.Ok;
+    private bool ShowBanner =>
+        _status.Kind is PanelStatusKind.Switching or PanelStatusKind.Error;
 
     private Rectangle BannerRect => ShowBanner
         ? new Rectangle(MainRect.X + S(18), RunBarRect.Bottom + S(8), MainRect.Width - S(36), S(36))
@@ -300,8 +360,8 @@ internal sealed class MainPanelWindow : Form
         S(BlockHeadHeight + 194));
 
     private int ControlBlockHeight => Math.Min(
-        S(300),
-        Math.Max(S(240), MainRect.Bottom - S(14) - (TopologyRect.Bottom + S(12))));
+        S(340),
+        Math.Max(S(292), MainRect.Bottom - S(14) - (TopologyRect.Bottom + S(12))));
 
     private Rectangle SourceBlockRect => new(
         MainRect.X + S(18),
@@ -324,7 +384,23 @@ internal sealed class MainPanelWindow : Form
         MainRect.Width - S(36),
         S(90));
 
-    private int PreviewControlAreaHeight => S((21 * 5) + (3 * 4) + 6);
+    private int SourceControlAreaHeight => S((21 * 5) + (3 * 4) + 6);
+
+    private int PreviewControlAreaHeight => S((21 * 6) + (3 * 5) + 6);
+
+    private Rectangle ReenumerateButtonRect => new(
+        SourceBlockRect.Right - S(10) - S(78),
+        SourceBlockRect.Y + ((S(BlockHeadHeight) - S(22)) / 2),
+        S(78),
+        S(22));
+
+    private int PillRight => Wide ? RunBarRect.Right : DrawerButtonRect.Left - S(10);
+
+    private Rectangle PauseButtonRect => new(
+        PillRight - S(88) - S(8) - S(66),
+        RunBarRect.Y + ((RunBarRect.Height - S(24)) / 2),
+        S(66),
+        S(24));
 
     private Rectangle SwapButtonRect => new(
         TopologyRect.Right - S(12) - S(92),
@@ -378,6 +454,45 @@ internal sealed class MainPanelWindow : Form
         S(96),
         S(24));
 
+    private Rectangle DiagnosticsDeviceRect => new(
+        TestContentRect.X,
+        TestContentRect.Y,
+        TestContentRect.Width,
+        S(252));
+
+    private Rectangle DiagnosticsLogRect => new(
+        TestContentRect.X,
+        DiagnosticsDeviceRect.Bottom + S(12),
+        TestContentRect.Width,
+        Math.Max(S(160), TestContentRect.Bottom - DiagnosticsDeviceRect.Bottom - S(12)));
+
+    private Rectangle DiagnosticsExportButtonRect => new(
+        DiagnosticsDeviceRect.Right - S(12) - S(118),
+        DiagnosticsDeviceRect.Y + ((S(BlockHeadHeight) - S(24)) / 2),
+        S(118),
+        S(24));
+
+    private Rectangle DiagnosticsLogButtonRect => new(
+        DiagnosticsLogRect.Right - S(12) - S(92),
+        DiagnosticsLogRect.Y + ((S(BlockHeadHeight) - S(24)) / 2),
+        S(92),
+        S(24));
+
+    private Rectangle DiagnosticsCopyButtonRect => new(
+        DiagnosticsLogRect.Right - S(12) - S(112),
+        DiagnosticsLogRect.Bottom - S(10) - S(24),
+        S(112),
+        S(24));
+
+    private int DiagnosticsLogBodyTop => DiagnosticsLogRect.Y + S(BlockHeadHeight) + S(6);
+
+    private int DiagnosticsLogBodyBottom => DiagnosticsLogRect.Bottom - S(38);
+
+    private int DiagnosticsLogLineHeight => S(15);
+
+    private int DiagnosticsLogVisibleLines =>
+        Math.Max(1, (DiagnosticsLogBodyBottom - DiagnosticsLogBodyTop) / DiagnosticsLogLineHeight);
+
     private Rectangle BenchRunButtonRect => new(
         BenchRect.Right - S(12) - S(156),
         BenchRect.Bottom - S(12) - S(28),
@@ -416,9 +531,33 @@ internal sealed class MainPanelWindow : Form
         _timer.Enabled = Visible;
         _statusTimer.Enabled = Visible;
         _benchmarkTimer.Enabled = Visible && _benchmarkRunning;
+        _animationTimer.Enabled = Visible;
         if (Visible)
         {
             RefreshStats();
+        }
+    }
+
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        MaybeStartOnboarding();
+    }
+
+    private void MaybeStartOnboarding()
+    {
+        if (_onboardingChecked)
+        {
+            return;
+        }
+
+        _onboardingChecked = true;
+
+        if (_shouldOnboard())
+        {
+            _onboardingStep = 0;
+            _onboardRunStarted = false;
+            Invalidate();
         }
     }
 
@@ -462,6 +601,13 @@ internal sealed class MainPanelWindow : Form
         if (m.Msg == WmGetMinMaxInfo)
         {
             base.WndProc(ref m);
+
+            // 收起条远小于常规最小尺寸，不能被最小尺寸约束挡住
+            if (_collapsed)
+            {
+                return;
+            }
+
             var info = Marshal.PtrToStructure<MinMaxInfo>(m.LParam);
             info.MinTrackSize.X = Math.Max(info.MinTrackSize.X, S(MinLogicalWidth));
             info.MinTrackSize.Y = Math.Max(info.MinTrackSize.Y, S(MinLogicalHeight));
@@ -553,12 +699,34 @@ internal sealed class MainPanelWindow : Form
         base.OnMouseLeave(e);
     }
 
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        // 只有诊断视图的日志需要滚动，其余视图交给默认处理
+        if (_view == PanelView.Diagnostics && _logLines.Length > DiagnosticsLogVisibleLines)
+        {
+            _logScroll = Math.Clamp(
+                _logScroll + (e.Delta > 0 ? 3 : -3),
+                0,
+                _logLines.Length - DiagnosticsLogVisibleLines);
+            Invalidate();
+            return;
+        }
+
+        base.OnMouseWheel(e);
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         Graphics graphics = e.Graphics;
         graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
         graphics.SmoothingMode = SmoothingMode.None;
         graphics.Clear(PanelTheme.Background);
+
+        if (_collapsed)
+        {
+            DrawCollapsedStrip(graphics);
+            return;
+        }
 
         DrawTitleBar(graphics);
         DrawRail(graphics);
@@ -574,6 +742,11 @@ internal sealed class MainPanelWindow : Form
         }
 
         DrawStatusBar(graphics);
+
+        if (_onboardingStep >= 0)
+        {
+            DrawOnboarding(graphics);
+        }
     }
 
     private void RefreshStats()
@@ -591,7 +764,187 @@ internal sealed class MainPanelWindow : Form
             }
         }
 
+        if (_view == PanelView.Diagnostics && Visible)
+        {
+            LoadDiagnostics(force: false);
+        }
+
         Invalidate();
+    }
+
+    /// <summary>
+    /// 只在监看页且链路有帧时推进黄点，其他页面/暂停/收起/引导期间不产生重绘。
+    /// 0.035/60ms 约 1.7 秒走完一遍，三个点等距给出流动方向。
+    /// </summary>
+    private void AdvanceLinkAnimation()
+    {
+        if (!_live
+            || _view != PanelView.Monitor
+            || _collapsed
+            || _onboardingStep >= 0
+            || WindowState == FormWindowState.Minimized)
+        {
+            return;
+        }
+
+        _linkPhase += 0.035;
+        if (_linkPhase >= 1)
+        {
+            _linkPhase -= 1;
+        }
+
+        Invalidate();
+    }
+
+    private void LoadDiagnostics(bool force)
+    {
+        _diagnosticsSnapshot = _diagnostics();
+
+        // 日志每 2 秒重读一次即可，避免每秒打开文件
+        if (force || Environment.TickCount64 - _logLoadedAt >= 2000)
+        {
+            _logLines = _readLogTail(400);
+            _logLoadedAt = Environment.TickCount64;
+        }
+
+        ClampLogScroll();
+    }
+
+    private void ClampLogScroll()
+    {
+        int maxScroll = Math.Max(0, _logLines.Length - DiagnosticsLogVisibleLines);
+        _logScroll = Math.Clamp(_logScroll, 0, maxScroll);
+    }
+
+    private string BuildDiagnosticsSummary()
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine(
+            CultureInfo.InvariantCulture,
+            $"Glimpse 诊断摘要 · {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        builder.AppendLine(CultureInfo.InvariantCulture, $"状态：{_status.Kind} · {_status.Headline}");
+        builder.AppendLine(
+            CultureInfo.InvariantCulture,
+            $"实时：cap {_latest.CaptureFps:F1} fps · show {_latest.ShowFps:F1} fps · " +
+            $"age p95 {_latest.AgeP95:F1} ms · present p95 {_latest.PresentP95:F1} ms · " +
+            $"丢弃 {_latest.Dropped}");
+        builder.AppendLine();
+
+        foreach (DiagnosticEntry entry in _diagnosticsSnapshot)
+        {
+            builder.AppendLine(CultureInfo.InvariantCulture, $"{entry.Label}：{entry.Value}");
+        }
+
+        return builder.ToString();
+    }
+
+    private void CopyDiagnosticsSummary()
+    {
+        try
+        {
+            Clipboard.SetText(BuildDiagnosticsSummary());
+            ShowDiagnosticsNotice("诊断摘要已复制到剪贴板");
+        }
+        catch (Exception ex)
+        {
+            ShowDiagnosticsNotice($"复制失败：{ex.Message}");
+        }
+    }
+
+    private void ExportDiagnosticsPackage()
+    {
+        string? path = _exportDiagnostics(BuildDiagnosticsSummary());
+        ShowDiagnosticsNotice(path is null ? "诊断包导出失败，详见日志" : $"诊断包：{path}");
+    }
+
+    private void ShowDiagnosticsNotice(string text)
+    {
+        _diagnosticsNotice = text;
+        _diagnosticsNoticeAt = DateTime.Now;
+        Invalidate();
+    }
+
+    private void CollapsePanel()
+    {
+        if (_collapsed)
+        {
+            return;
+        }
+
+        if (WindowState != FormWindowState.Normal)
+        {
+            WindowState = FormWindowState.Normal;
+        }
+
+        _expandedBounds = WindowPlacement.GetBounds(Handle);
+        _collapsed = true;
+        ApplyCollapsedBounds();
+        Invalidate();
+    }
+
+    private void ExpandPanel()
+    {
+        if (!_collapsed)
+        {
+            return;
+        }
+
+        _collapsed = false;
+        (int x, int y, int width, int height) = _expandedBounds;
+
+        if (width < S(MinLogicalWidth) || height < S(MinLogicalHeight))
+        {
+            width = S(DesignWidth);
+            height = S(DesignHeight);
+
+            if (CollapsedTargetMonitor() is { } monitor)
+            {
+                x = monitor.X + ((monitor.Width - width) / 2);
+                y = monitor.Y + ((monitor.Height - height) / 2);
+            }
+        }
+
+        WindowPlacement.Move(Handle, x, y, width, height);
+        Invalidate();
+    }
+
+    private void ApplyCollapsedBounds()
+    {
+        if (CollapsedTargetMonitor() is not { } monitor)
+        {
+            return;
+        }
+
+        int width = S(CollapsedWidth);
+        int height = S(CollapsedHeight);
+        WindowPlacement.Move(
+            Handle,
+            monitor.X + ((monitor.Width - width) / 2),
+            monitor.Y + monitor.Height - height - S(CollapsedBottomMargin),
+            width,
+            height);
+    }
+
+    /// <summary>收起条贴在面板当前所在屏的底边，而不是源屏或预览屏。</summary>
+    private MonitorDescriptor? CollapsedTargetMonitor()
+    {
+        (int x, int y, int width, int height) = WindowPlacement.GetBounds(Handle);
+        int centerX = x + (width / 2);
+        int centerY = y + (height / 2);
+        IReadOnlyList<MonitorDescriptor> monitors = _monitors();
+
+        foreach (MonitorDescriptor monitor in monitors)
+        {
+            if (centerX >= monitor.X
+                && centerX < monitor.X + monitor.Width
+                && centerY >= monitor.Y
+                && centerY < monitor.Y + monitor.Height)
+            {
+                return monitor;
+            }
+        }
+
+        return monitors.Count > 0 ? monitors[0] : null;
     }
 
     private void HandleDpiChanged(int wParam, IntPtr suggestedRectPointer)
@@ -600,6 +953,14 @@ internal sealed class MainPanelWindow : Form
         if (newDpi > 0)
         {
             _dpi = newDpi;
+        }
+
+        // 收起条不跟随系统建议矩形，按新 DPI 重新贴到当前屏底边
+        if (_collapsed)
+        {
+            ApplyCollapsedBounds();
+            Invalidate();
+            return;
         }
 
         if (!_inSizeMove || suggestedRectPointer == IntPtr.Zero)
@@ -617,6 +978,12 @@ internal sealed class MainPanelWindow : Form
 
     private IntPtr HitTestWindow(IntPtr screenPoint)
     {
+        // 收起态整条都可点，不提供边缘缩放
+        if (_collapsed)
+        {
+            return new IntPtr(HtClient);
+        }
+
         int screenX = unchecked((short)(long)screenPoint);
         int screenY = unchecked((short)((long)screenPoint >> 16));
         Point point = PointToClient(new Point(screenX, screenY));
@@ -682,6 +1049,18 @@ internal sealed class MainPanelWindow : Form
 
     private PanelAction HitAction(Point point)
     {
+        // 引导覆盖层存在时，面板其余部分不接受操作
+        if (_onboardingStep >= 0)
+        {
+            return HitOnboarding(point);
+        }
+
+        // 收起态只留一条细条，点任意处都展开回主控面板
+        if (_collapsed)
+        {
+            return PanelAction.Expand;
+        }
+
         for (int index = 0; index < 3; index++)
         {
             if (WindowButtonRect(index).Contains(point))
@@ -695,7 +1074,7 @@ internal sealed class MainPanelWindow : Form
             }
         }
 
-        for (int index = 0; index < 4; index++)
+        for (int index = 0; index < 3; index++)
         {
             if (RailButtonRect(index).Contains(point))
             {
@@ -703,10 +1082,14 @@ internal sealed class MainPanelWindow : Form
                 {
                     0 => PanelAction.ViewMonitor,
                     1 => PanelAction.ViewTest,
-                    2 => PanelAction.ViewDiagnostics,
-                    _ => PanelAction.OpenLog,
+                    _ => PanelAction.ViewDiagnostics,
                 };
             }
+        }
+
+        if (RailCollapseButtonRect.Contains(point))
+        {
+            return PanelAction.Collapse;
         }
 
         if (_view == PanelView.Monitor && ShowBench && BenchRunButtonRect.Contains(point))
@@ -716,6 +1099,12 @@ internal sealed class MainPanelWindow : Form
 
         if (_view == PanelView.Monitor)
         {
+            PanelAction? sourceAction = SourceControlHit(point);
+            if (sourceAction is { } sourceHit)
+            {
+                return sourceHit;
+            }
+
             PanelAction? previewAction = PreviewControlHit(point);
             if (previewAction is { } action)
             {
@@ -725,9 +1114,11 @@ internal sealed class MainPanelWindow : Form
 
         if (_view == PanelView.Test)
         {
-            if (!_benchmarkRunning && TestStartButtonRect.Contains(point))
+            if (TestStartButtonRect.Contains(point))
             {
-                return PanelAction.StartBenchmark;
+                return _benchmarkRunning
+                    ? PanelAction.StopBenchmark
+                    : PanelAction.StartBenchmark;
             }
 
             Rectangle[] chips = TestDurationChipRects();
@@ -745,9 +1136,37 @@ internal sealed class MainPanelWindow : Form
             }
         }
 
+        if (_view == PanelView.Diagnostics)
+        {
+            if (DiagnosticsExportButtonRect.Contains(point))
+            {
+                return PanelAction.ExportDiagnostics;
+            }
+
+            if (DiagnosticsLogButtonRect.Contains(point))
+            {
+                return PanelAction.OpenLog;
+            }
+
+            if (DiagnosticsCopyButtonRect.Contains(point))
+            {
+                return PanelAction.CopyDiagnostics;
+            }
+        }
+
         if (_view == PanelView.Monitor && !_switching && SwapButtonRect.Contains(point))
         {
             return PanelAction.SwapDirection;
+        }
+
+        if (_view == PanelView.Monitor && ReenumerateButtonRect.Contains(point))
+        {
+            return PanelAction.Reenumerate;
+        }
+
+        if (_view == PanelView.Monitor && PauseButtonRect.Contains(point))
+        {
+            return PanelAction.TogglePause;
         }
 
         if (!Wide && DrawerButtonRect.Contains(point))
@@ -758,6 +1177,41 @@ internal sealed class MainPanelWindow : Form
         if (!Wide && _drawerOpen && DrawerCloseButtonRect.Contains(point))
         {
             return PanelAction.ToggleDrawer;
+        }
+
+        return PanelAction.None;
+    }
+
+    private PanelAction HitOnboarding(Point point)
+    {
+        if (OnboardSkipRect.Contains(point))
+        {
+            return PanelAction.OnboardSkip;
+        }
+
+        if (_onboardingStep > 0 && OnboardPrevRect.Contains(point))
+        {
+            return PanelAction.OnboardPrev;
+        }
+
+        if (OnboardNextRect.Contains(point))
+        {
+            if (_onboardingStep < 2)
+            {
+                return PanelAction.OnboardNext;
+            }
+
+            if (_benchmarkRunning)
+            {
+                return PanelAction.None;
+            }
+
+            return _onboardRunStarted ? PanelAction.OnboardFinish : PanelAction.OnboardStart;
+        }
+
+        if (_onboardingStep == 0 && OnboardSwapRect.Contains(point))
+        {
+            return PanelAction.SwapDirection;
         }
 
         return PanelAction.None;
@@ -795,10 +1249,45 @@ internal sealed class MainPanelWindow : Form
             case PanelAction.ViewDiagnostics:
                 _view = PanelView.Diagnostics;
                 _drawerOpen = false;
+                _logScroll = 0;
+                LoadDiagnostics(force: true);
                 break;
 
             case PanelAction.OpenLog:
                 _openLogDirectory();
+                break;
+
+            case PanelAction.CopyDiagnostics:
+                CopyDiagnosticsSummary();
+                break;
+
+            case PanelAction.ExportDiagnostics:
+                ExportDiagnosticsPackage();
+                break;
+
+            case PanelAction.Collapse:
+                CollapsePanel();
+                break;
+
+            case PanelAction.Expand:
+                ExpandPanel();
+                break;
+
+            case PanelAction.OnboardSkip:
+            case PanelAction.OnboardFinish:
+                FinishOnboarding();
+                break;
+
+            case PanelAction.OnboardPrev:
+                _onboardingStep = Math.Max(0, _onboardingStep - 1);
+                break;
+
+            case PanelAction.OnboardNext:
+                _onboardingStep = Math.Min(2, _onboardingStep + 1);
+                break;
+
+            case PanelAction.OnboardStart:
+                StartOnboardBenchmark();
                 break;
 
             case PanelAction.ToggleDrawer:
@@ -813,8 +1302,28 @@ internal sealed class MainPanelWindow : Form
                 _swapDirection();
                 break;
 
+            case PanelAction.Reenumerate:
+                _reenumerate();
+                break;
+
+            case PanelAction.TogglePause:
+                _togglePause();
+                break;
+
+            case PanelAction.ToggleCursorCapture:
+                _setCursorCaptured(!_isCursorCaptured());
+                break;
+
+            case PanelAction.ToggleSelfCapture:
+                _setSelfCaptured(!_isSelfCaptured());
+                break;
+
             case PanelAction.TogglePreview:
                 _togglePreview();
+                break;
+
+            case PanelAction.ToggleTopMost:
+                _setTopMost(!_isTopMost());
                 break;
 
             case PanelAction.ToggleOverlay:
@@ -857,6 +1366,10 @@ internal sealed class MainPanelWindow : Form
                 StartBenchmark();
                 break;
 
+            case PanelAction.StopBenchmark:
+                _stopBenchmark();
+                break;
+
             case PanelAction.Duration15:
                 _setTestDuration(15);
                 break;
@@ -893,22 +1406,26 @@ internal sealed class MainPanelWindow : Form
         (PreviewAnchor.Free, PanelAction.AnchorFree, "自由"),
     ];
 
-    private int PreviewRowsTop
+    private int ControlRowsTop(Rectangle block, bool sourceSide)
     {
-        get
-        {
-            List<(MonitorDescriptor Monitor, Rectangle Bounds)> cards =
-                LayoutCards(PreviewBlockRect, sourceSide: false, PreviewControlAreaHeight);
-            int top = cards.Count > 0
-                ? cards[^1].Bounds.Bottom
-                : PreviewBlockRect.Y + S(BlockHeadHeight) + S(8);
-            return top + S(8);
-        }
+        int reserved = sourceSide ? SourceControlAreaHeight : PreviewControlAreaHeight;
+        List<(MonitorDescriptor Monitor, Rectangle Bounds)> cards =
+            LayoutCards(block, sourceSide, reserved);
+        int top = cards.Count > 0
+            ? cards[^1].Bounds.Bottom
+            : block.Y + S(BlockHeadHeight) + S(8);
+        return top + S(8);
     }
+
+    private Rectangle SourceRowRect(int index) => new(
+        SourceBlockRect.X + S(10),
+        ControlRowsTop(SourceBlockRect, sourceSide: true) + (index * (S(21) + S(3))),
+        SourceBlockRect.Width - S(20),
+        S(21));
 
     private Rectangle PreviewRowRect(int index) => new(
         PreviewBlockRect.X + S(10),
-        PreviewRowsTop + (index * (S(21) + S(3))),
+        ControlRowsTop(PreviewBlockRect, sourceSide: false) + (index * (S(21) + S(3))),
         PreviewBlockRect.Width - S(20),
         S(21));
 
@@ -934,6 +1451,21 @@ internal sealed class MainPanelWindow : Form
         return rects;
     }
 
+    private PanelAction? SourceControlHit(Point point)
+    {
+        if (ToggleRect(SourceRowRect(0)).Contains(point))
+        {
+            return PanelAction.ToggleCursorCapture;
+        }
+
+        if (ToggleRect(SourceRowRect(1)).Contains(point))
+        {
+            return PanelAction.ToggleSelfCapture;
+        }
+
+        return null;
+    }
+
     private PanelAction? PreviewControlHit(Point point)
     {
         if (ToggleRect(PreviewRowRect(0)).Contains(point))
@@ -946,7 +1478,12 @@ internal sealed class MainPanelWindow : Form
             return PanelAction.ToggleOverlay;
         }
 
-        Rectangle[] scaleChips = ChipRects(PreviewRowRect(2), ScaleActions.Length, S(40));
+        if (ToggleRect(PreviewRowRect(2)).Contains(point))
+        {
+            return PanelAction.ToggleTopMost;
+        }
+
+        Rectangle[] scaleChips = ChipRects(PreviewRowRect(3), ScaleActions.Length, S(40));
         for (int index = 0; index < scaleChips.Length; index++)
         {
             if (scaleChips[index].Contains(point))
@@ -955,7 +1492,7 @@ internal sealed class MainPanelWindow : Form
             }
         }
 
-        Rectangle[] anchorChips = ChipRects(PreviewRowRect(3), AnchorChips.Length, S(46));
+        Rectangle[] anchorChips = ChipRects(PreviewRowRect(4), AnchorChips.Length, S(46));
         for (int index = 0; index < anchorChips.Length; index++)
         {
             if (anchorChips[index].Contains(point))
@@ -996,6 +1533,30 @@ internal sealed class MainPanelWindow : Form
         _benchmarkRunSeconds = _testDuration();
         _benchmarkTimer.Enabled = Visible;
         _startBenchmark(_benchmarkRunSeconds, OnBenchmarkCompleted);
+        Invalidate();
+    }
+
+    private void StartOnboardBenchmark()
+    {
+        if (_benchmarkRunning)
+        {
+            return;
+        }
+
+        _onboardRunStarted = true;
+        _benchmarkRunning = true;
+        _benchmarkStartedAt = DateTime.UtcNow;
+        _benchmarkRunSeconds = 10;
+        _benchmarkTimer.Enabled = Visible;
+        _startBenchmark(10, OnBenchmarkCompleted);
+        Invalidate();
+    }
+
+    private void FinishOnboarding()
+    {
+        _onboardingStep = -1;
+        _onboardRunStarted = false;
+        _completeOnboarding();
         Invalidate();
     }
 
@@ -1188,7 +1749,437 @@ internal sealed class MainPanelWindow : Form
         DrawRailButton(graphics, 0, PanelAction.ViewMonitor, "监看", PanelView.Monitor);
         DrawRailButton(graphics, 1, PanelAction.ViewTest, "测试", PanelView.Test);
         DrawRailButton(graphics, 2, PanelAction.ViewDiagnostics, "诊断", PanelView.Diagnostics);
-        DrawRailButton(graphics, 3, PanelAction.OpenLog, "日志", null);
+        DrawRailCollapseButton(graphics);
+    }
+
+    private void DrawRailCollapseButton(Graphics graphics)
+    {
+        Rectangle rect = RailCollapseButtonRect;
+        bool hover = _hover == PanelAction.Collapse;
+
+        if (hover)
+        {
+            using var brush = new SolidBrush(PanelTheme.Surface);
+            graphics.FillRectangle(brush, rect);
+
+            using var border = new Pen(PanelTheme.Line, PenWidth(1));
+            graphics.DrawRectangle(border, rect.X, rect.Y, rect.Width - 1, rect.Height - 1);
+        }
+
+        Color color = hover ? PanelTheme.Foreground2 : PanelTheme.Foreground3;
+        int centerX = rect.X + (rect.Width / 2);
+        int centerY = rect.Y + S(16);
+
+        using (var pen = new Pen(color, PenWidth(1.3f)))
+        {
+            graphics.DrawLine(pen, centerX - S(5), centerY + S(3), centerX, centerY - S(2));
+            graphics.DrawLine(pen, centerX + S(5), centerY + S(3), centerX, centerY - S(2));
+        }
+
+        DrawText(
+            graphics,
+            "收起",
+            PanelTheme.Small,
+            color,
+            new Rectangle(rect.X, rect.Y + S(30), rect.Width, S(14)),
+            StringAlignment.Center,
+            StringAlignment.Center,
+            ellipsis: false);
+    }
+
+    private void DrawCollapsedStrip(Graphics graphics)
+    {
+        int width = ClientSize.Width;
+        int height = ClientSize.Height;
+        DrawLine(graphics, 0, 0, width, 0, PanelTheme.Line2);
+        DrawLine(graphics, 0, height - 1, width, height - 1, PanelTheme.Line2);
+
+        Color dotColor = _status.Kind switch
+        {
+            PanelStatusKind.Error => PanelTheme.Error,
+            PanelStatusKind.Switching => PanelTheme.Amber,
+            PanelStatusKind.Paused => PanelTheme.Foreground3,
+            _ => PanelTheme.Ok,
+        };
+
+        int dotSize = S(8);
+        int x = S(16);
+        using (var brush = new SolidBrush(dotColor))
+        {
+            graphics.FillEllipse(brush, x, (height - dotSize) / 2, dotSize, dotSize);
+        }
+
+        x += dotSize + S(8);
+        MonitorDescriptor source = _sourceMonitor();
+        MonitorDescriptor preview = _previewMonitor();
+        string route =
+            $"{(source.IsPrimary ? "主屏" : "副屏")} {source.Index} → " +
+            $"{(preview.IsPrimary ? "主屏" : "副屏")} {preview.Index}";
+
+        DrawText(
+            graphics,
+            route,
+            PanelTheme.Body,
+            PanelTheme.Foreground2,
+            new Rectangle(x, 0, S(152), height),
+            StringAlignment.Near,
+            StringAlignment.Center,
+            ellipsis: false);
+
+        x += S(152) + S(4);
+        DrawLine(graphics, x, S(14), x, height - S(14), PanelTheme.Line2);
+        x += S(12);
+
+        DrawText(
+            graphics,
+            $"{_latest.CaptureFps:F0} fps",
+            PanelTheme.MonoSmall,
+            PanelTheme.Foreground,
+            new Rectangle(x, 0, S(56), height),
+            StringAlignment.Near,
+            StringAlignment.Center,
+            ellipsis: false);
+
+        x += S(60);
+        DrawText(
+            graphics,
+            $"{_latest.AgeP95:F0} ms",
+            PanelTheme.MonoSmall,
+            PanelTheme.Foreground,
+            new Rectangle(x, 0, S(56), height),
+            StringAlignment.Near,
+            StringAlignment.Center,
+            ellipsis: false);
+
+        // 点击穿透在当前呈现路径下不可用，收起条上只作禁用态展示
+        DrawText(
+            graphics,
+            "穿透",
+            PanelTheme.Small,
+            PanelTheme.Foreground3,
+            new Rectangle(CollapsedToggleRect.X - S(40), 0, S(36), height),
+            StringAlignment.Near,
+            StringAlignment.Center,
+            ellipsis: false);
+        DrawDisabledToggle(graphics, CollapsedToggleRect);
+
+        DrawQuietButton(graphics, CollapsedExpandButtonRect, "展开", PanelAction.Expand);
+    }
+
+    private void DrawDisabledToggle(Graphics graphics, Rectangle rect)
+    {
+        using (var path = Rounded(rect, rect.Height / 2))
+        {
+            using var brush = new SolidBrush(PanelTheme.Surface2);
+            graphics.FillPath(brush, path);
+
+            using var pen = new Pen(PanelTheme.Line2, PenWidth(1));
+            graphics.DrawPath(pen, path);
+        }
+
+        int knob = S(11);
+        using var knobBrush = new SolidBrush(PanelTheme.Line3);
+        graphics.FillEllipse(
+            knobBrush,
+            rect.X + S(2),
+            rect.Y + ((rect.Height - knob) / 2),
+            knob,
+            knob);
+    }
+
+    private void DrawOnboarding(Graphics graphics)
+    {
+        using (var veil = new SolidBrush(Color.FromArgb(196, 5, 6, 8)))
+        {
+            graphics.FillRectangle(veil, ClientRectangle);
+        }
+
+        Rectangle dialog = OnboardDialogRect;
+        DrawBlock(graphics, dialog);
+
+        string title = _onboardingStep switch
+        {
+            0 => "先确认两块屏",
+            1 => "自动检查",
+            _ => "试运行 10 秒",
+        };
+
+        DrawText(
+            graphics,
+            title,
+            PanelTheme.BodyStrong,
+            PanelTheme.Foreground,
+            new Rectangle(dialog.X + S(20), dialog.Y, dialog.Width - S(160), S(BlockHeadHeight)),
+            StringAlignment.Near,
+            StringAlignment.Center,
+            ellipsis: false);
+
+        // 步骤指示：已完成为绿、当前为琥珀、未开始为灰
+        for (int index = 0; index < 3; index++)
+        {
+            int size = S(18);
+            var step = new Rectangle(
+                dialog.Right - S(20) - ((3 - index) * (size + S(6))),
+                dialog.Y + ((S(BlockHeadHeight) - size) / 2),
+                size,
+                size);
+
+            bool done = index < _onboardingStep;
+            bool active = index == _onboardingStep;
+
+            using (var path = Rounded(step, size / 2))
+            {
+                using var brush = new SolidBrush(
+                    active ? PanelTheme.Amber : done ? PanelTheme.Ok : PanelTheme.Surface2);
+                graphics.FillPath(brush, path);
+            }
+
+            DrawText(
+                graphics,
+                $"{index + 1}",
+                PanelTheme.Small,
+                active || done ? PanelTheme.AmberInk : PanelTheme.Foreground3,
+                step,
+                StringAlignment.Center,
+                StringAlignment.Center,
+                ellipsis: false);
+        }
+
+        DrawLine(
+            graphics,
+            dialog.X,
+            dialog.Y + S(BlockHeadHeight),
+            dialog.Right,
+            dialog.Y + S(BlockHeadHeight),
+            PanelTheme.Line);
+
+        var body = new Rectangle(
+            dialog.X + S(20),
+            dialog.Y + S(BlockHeadHeight) + S(14),
+            dialog.Width - S(40),
+            dialog.Height - S(BlockHeadHeight) - S(74));
+
+        switch (_onboardingStep)
+        {
+            case 0:
+                DrawOnboardScreens(graphics, body);
+                break;
+
+            case 1:
+                DrawOnboardChecks(graphics, body);
+                break;
+
+            default:
+                DrawOnboardRun(graphics, body);
+                break;
+        }
+
+        DrawQuietButton(graphics, OnboardSkipRect, "跳过引导", PanelAction.OnboardSkip);
+
+        if (_onboardingStep > 0)
+        {
+            DrawQuietButton(graphics, OnboardPrevRect, "上一步", PanelAction.OnboardPrev);
+        }
+
+        DrawOnboardNextButton(graphics);
+    }
+
+    private void DrawOnboardScreens(Graphics graphics, Rectangle body)
+    {
+        DrawText(
+            graphics,
+            "选中要监看的屏和显示预览的屏，方向反了用右上角「交换方向」即可。",
+            PanelTheme.Body,
+            PanelTheme.Foreground2,
+            new Rectangle(body.X, body.Y, body.Width, S(24)),
+            StringAlignment.Near,
+            StringAlignment.Center);
+
+        MonitorDescriptor source = _sourceMonitor();
+        MonitorDescriptor preview = _previewMonitor();
+        int cardWidth = Math.Min(S(320), (body.Width / 2) - S(12));
+        int cardHeight = S(84);
+
+        var sourceCard = new Rectangle(body.X, body.Y + S(44), cardWidth, cardHeight);
+        DrawMonitorCard(graphics, sourceCard, source, selected: true, hovered: false, dimmed: false);
+
+        DrawText(
+            graphics,
+            "预览显示在",
+            PanelTheme.Small,
+            PanelTheme.Foreground3,
+            new Rectangle(body.X + S(20), sourceCard.Bottom + S(4), S(120), S(24)),
+            StringAlignment.Near,
+            StringAlignment.Center,
+            ellipsis: false);
+
+        var previewCard = new Rectangle(body.X, sourceCard.Bottom + S(34), cardWidth, cardHeight);
+        DrawMonitorCard(graphics, previewCard, preview, selected: true, hovered: false, dimmed: false);
+
+        DrawText(
+            graphics,
+            "选好后点「下一步」。之后随时可以在监看页调整。",
+            PanelTheme.Small,
+            PanelTheme.Foreground3,
+            new Rectangle(body.X + cardWidth + S(24), body.Y + S(60), body.Width - cardWidth - S(48), S(40)),
+            StringAlignment.Near,
+            StringAlignment.Center);
+
+        DrawQuietButton(graphics, OnboardSwapRect, "交换方向", PanelAction.SwapDirection);
+    }
+
+    private void DrawOnboardChecks(Graphics graphics, Rectangle body)
+    {
+        MonitorDescriptor source = _sourceMonitor();
+        MonitorDescriptor preview = _previewMonitor();
+        bool captureOk = _status.Kind != PanelStatusKind.Error;
+
+        (string Label, string Value, bool Ok)[] checks =
+        [
+            ("窗口捕获可用", captureOk ? "WGC · 运行中" : _status.Headline, captureOk),
+            (
+                "适配器",
+                $"{_adapterName()} · {(_adapterFallback() ? "已降级" : "高性能")}",
+                !_adapterFallback()),
+            ("预览窗已排除出捕获", _captureExcluded() ? "0x11" : "会出现在捕获中", _captureExcluded()),
+            ("热键", $"暂停 {string.Join("+", _pauseShortcutKeys)}", true),
+            ("链路", $"#{source.Index} → #{preview.Index}", true),
+        ];
+
+        int rowHeight = S(40);
+        int y = body.Y;
+
+        foreach ((string label, string value, bool ok) in checks)
+        {
+            Color color = ok ? PanelTheme.Ok : PanelTheme.Warn;
+            DrawText(
+                graphics,
+                ok ? "✓" : "!",
+                PanelTheme.BodyStrong,
+                color,
+                new Rectangle(body.X, y, S(20), rowHeight),
+                StringAlignment.Center,
+                StringAlignment.Center,
+                ellipsis: false);
+
+            DrawText(
+                graphics,
+                label,
+                PanelTheme.Body,
+                PanelTheme.Foreground2,
+                new Rectangle(body.X + S(28), y, body.Width - S(300), rowHeight),
+                StringAlignment.Near,
+                StringAlignment.Center,
+                ellipsis: false);
+
+            DrawText(
+                graphics,
+                value,
+                PanelTheme.MonoSmall,
+                ok ? PanelTheme.Foreground : PanelTheme.Warn,
+                new Rectangle(body.Right - S(260), y, S(260), rowHeight),
+                StringAlignment.Far,
+                StringAlignment.Center);
+
+            y += rowHeight;
+        }
+
+        DrawText(
+            graphics,
+            "跨适配器不是错误，只是延迟会高一点；想追更低延迟，把预览窗拖到同一块显卡驱动的屏上。",
+            PanelTheme.Small,
+            PanelTheme.Foreground3,
+            new Rectangle(body.X, y + S(6), body.Width, S(40)),
+            StringAlignment.Near,
+            StringAlignment.Center);
+    }
+
+    private void DrawOnboardRun(Graphics graphics, Rectangle body)
+    {
+        if (_benchmarkRunning)
+        {
+            DrawTestProgress(graphics, body);
+            return;
+        }
+
+        if (_onboardRunStarted && _lastBenchmark is { } result)
+        {
+            DrawTestTable(graphics, body, result);
+            return;
+        }
+
+        DrawText(
+            graphics,
+            "运行 10 秒确认捕获与呈现链路稳定。测试期间预览正常显示，完成后自动写入基准报告。",
+            PanelTheme.Body,
+            PanelTheme.Foreground2,
+            new Rectangle(body.X, body.Y + S(20), body.Width, S(60)),
+            StringAlignment.Near,
+            StringAlignment.Center);
+    }
+
+    private void DrawOnboardNextButton(Graphics graphics)
+    {
+        string text;
+        PanelAction action;
+        bool enabled = true;
+
+        if (_onboardingStep < 2)
+        {
+            text = "下一步";
+            action = PanelAction.OnboardNext;
+        }
+        else if (_benchmarkRunning)
+        {
+            text = "运行中…";
+            action = PanelAction.OnboardStart;
+            enabled = false;
+        }
+        else if (_onboardRunStarted)
+        {
+            text = "完成";
+            action = PanelAction.OnboardFinish;
+        }
+        else
+        {
+            text = "开始试运行 10 秒";
+            action = PanelAction.OnboardStart;
+        }
+
+        DrawPrimaryButton(graphics, OnboardNextRect, text, action, enabled);
+    }
+
+    private void DrawPrimaryButton(
+        Graphics graphics,
+        Rectangle rect,
+        string text,
+        PanelAction action,
+        bool enabled)
+    {
+        bool hover = enabled && _hover == action;
+        using var path = Rounded(rect, S(2));
+
+        using (var brush = new SolidBrush(
+            !enabled ? PanelTheme.Surface2 : hover ? Color.FromArgb(255, 188, 85) : PanelTheme.Amber))
+        {
+            graphics.FillPath(brush, path);
+        }
+
+        if (!enabled)
+        {
+            using var pen = new Pen(PanelTheme.Line2, PenWidth(1));
+            graphics.DrawPath(pen, path);
+        }
+
+        DrawText(
+            graphics,
+            text,
+            PanelTheme.BodyStrong,
+            enabled ? PanelTheme.AmberInk : PanelTheme.Foreground3,
+            rect,
+            StringAlignment.Center,
+            StringAlignment.Center,
+            ellipsis: false);
     }
 
     private void DrawRailButton(
@@ -1226,11 +2217,8 @@ internal sealed class MainPanelWindow : Form
             case 1:
                 DrawGaugeIcon(graphics, iconRect, color);
                 break;
-            case 2:
-                DrawPulseIcon(graphics, iconRect, color);
-                break;
             default:
-                DrawDocumentIcon(graphics, iconRect, color);
+                DrawPulseIcon(graphics, iconRect, color);
                 break;
         }
 
@@ -1270,10 +2258,7 @@ internal sealed class MainPanelWindow : Form
                 break;
 
             default:
-                DrawPlaceholder(
-                    graphics,
-                    "诊断",
-                    "下一小步接入：设备环境、日志尾与诊断摘要。");
+                DrawDiagnosticsView(graphics);
                 break;
         }
 
@@ -1288,7 +2273,13 @@ internal sealed class MainPanelWindow : Form
         Color headlineColor;
         Color dotColor;
 
-        if (_status.Kind == PanelStatusKind.Error)
+        if (_status.Kind == PanelStatusKind.Paused)
+        {
+            headline = "已暂停";
+            headlineColor = PanelTheme.Warn;
+            dotColor = PanelTheme.Foreground3;
+        }
+        else if (_status.Kind == PanelStatusKind.Error)
         {
             headline = _status.Headline;
             headlineColor = PanelTheme.Error;
@@ -1341,8 +2332,20 @@ internal sealed class MainPanelWindow : Form
         string route =
             $"捕获 #{source.Index} {source.Width}×{source.Height} → 预览 #{preview.Index} {preview.Width}×{preview.Height}";
 
+        if (!Wide)
+        {
+            DrawQuietButton(graphics, DrawerButtonRect, "读数", PanelAction.ToggleDrawer);
+        }
+
+        // 运行条上的主操作：暂停 / 继续；点击穿透因架构限制暂未接入
+        DrawQuietButton(
+            graphics,
+            PauseButtonRect,
+            _isPaused() ? "继续" : "暂停",
+            PanelAction.TogglePause);
+
         int routeX = textX + headlineWidth + S(10);
-        int routeWidth = Math.Max(0, bar.Right - routeX - S(110) - (Wide ? 0 : S(74)));
+        int routeWidth = Math.Max(0, PauseButtonRect.Left - S(10) - routeX);
         DrawText(
             graphics,
             route,
@@ -1352,15 +2355,8 @@ internal sealed class MainPanelWindow : Form
             StringAlignment.Near,
             StringAlignment.Center);
 
-        int pillRight = bar.Right;
-        if (!Wide)
-        {
-            DrawQuietButton(graphics, DrawerButtonRect, "读数", PanelAction.ToggleDrawer);
-            pillRight = DrawerButtonRect.Left - S(10);
-        }
-
         bool excluded = _captureExcluded();
-        var pill = new Rectangle(pillRight - S(88), bar.Y + ((bar.Height - S(19)) / 2), S(88), S(19));
+        var pill = new Rectangle(PillRight - S(88), bar.Y + ((bar.Height - S(19)) / 2), S(88), S(19));
         DrawPill(graphics, pill, excluded ? "捕获隐身" : "未隐身", excluded ? PanelTheme.Ok : PanelTheme.Warn);
 
         DrawLine(graphics, bar.X, bar.Bottom, bar.Right - 1, bar.Bottom, PanelTheme.Line);
@@ -1453,7 +2449,9 @@ internal sealed class MainPanelWindow : Form
         double previewAspect = preview.Width / (double)Math.Max(1, preview.Height);
 
         int frameHeight = Math.Min(S(150), Math.Max(S(60), body.Height - S(72)));
-        int linkGap = S(96);
+
+        // 链路中间要完整放下「WGC · 显存零拷贝 · 0 读回」与流动点，间距按实测文本留余量
+        int linkGap = S(196);
         int sourceWidth = (int)Math.Round(frameHeight * sourceAspect);
         int previewWidth = (int)Math.Round(frameHeight * previewAspect);
         int total = sourceWidth + linkGap + previewWidth;
@@ -1501,6 +2499,21 @@ internal sealed class MainPanelWindow : Form
             new Rectangle(body.X + S(12), footY, body.Width - S(230), S(18)),
             StringAlignment.Near,
             StringAlignment.Center);
+
+        if (_adapterFallback())
+        {
+            // 高性能适配器不可用时会退回显示器所属或首个适配器，延迟可能上升
+            int footWidth = (int)Math.Ceiling(Measure(graphics, foot, PanelTheme.MonoSmall).Width);
+            DrawText(
+                graphics,
+                "适配器已降级",
+                PanelTheme.MonoSmall,
+                PanelTheme.Warn,
+                new Rectangle(body.X + S(12) + footWidth + S(12), footY, S(90), S(18)),
+                StringAlignment.Near,
+                StringAlignment.Center,
+                ellipsis: false);
+        }
 
         bool excluded = _captureExcluded();
         string pillText = excluded ? "预览窗不出现在捕获结果里" : "预览窗可能出现在捕获结果里";
@@ -1607,21 +2620,53 @@ internal sealed class MainPanelWindow : Form
 
         if (_live)
         {
-            int dots = S(3);
-            using var brush = new SolidBrush(PanelTheme.Amber);
-            for (int index = 1; index <= 3; index++)
+            int dot = S(4);
+            int glow = S(9);
+
+            // 三个黄点等距同向流动，最前面的点最亮，后两个渐隐，直观表示帧从源走向预览
+            for (int index = 0; index < 3; index++)
             {
-                int x = startX + (((endX - startX) * index) / 4);
-                graphics.FillEllipse(brush, x - (dots / 2), midY - (dots / 2), dots, dots);
+                double phase = _linkPhase + (index / 3.0);
+                phase -= Math.Floor(phase);
+                int x = startX + (int)Math.Round((endX - startX) * phase);
+                int alpha = index switch
+                {
+                    0 => 255,
+                    1 => 150,
+                    _ => 80,
+                };
+
+                using (var glowBrush = new SolidBrush(
+                    Color.FromArgb(index == 0 ? 48 : 20, PanelTheme.Amber)))
+                {
+                    graphics.FillEllipse(
+                        glowBrush,
+                        x - (glow / 2),
+                        midY - (glow / 2),
+                        glow,
+                        glow);
+                }
+
+                using var brush = new SolidBrush(Color.FromArgb(alpha, PanelTheme.Amber));
+                graphics.FillEllipse(brush, x - (dot / 2), midY - (dot / 2), dot, dot);
             }
         }
 
+        string label = _live ? "WGC · 显存零拷贝 · 0 读回" : "链路停止";
+
+        // 按实际文本宽度定矩形，避免居中裁剪把首尾字切掉
+        int labelWidth = (int)Math.Ceiling(Measure(graphics, label, PanelTheme.MonoSmall).Width) + S(8);
+
         DrawText(
             graphics,
-            _live ? "WGC · 零拷贝" : "链路停止",
+            label,
             PanelTheme.MonoSmall,
             _live ? PanelTheme.Foreground3 : PanelTheme.Error,
-            new Rectangle(startX, midY - S(24), Math.Max(S(40), endX - startX), S(16)),
+            new Rectangle(
+                ((startX + endX) - labelWidth) / 2,
+                midY - S(24),
+                labelWidth,
+                S(16)),
             StringAlignment.Center,
             StringAlignment.Center,
             ellipsis: false);
@@ -1679,16 +2724,21 @@ internal sealed class MainPanelWindow : Form
         DrawBlock(graphics, block);
 
         MonitorDescriptor selected = sourceSide ? _sourceMonitor() : _previewMonitor();
-        string headRight = $"#{selected.Index} {ShortDeviceName(selected.DeviceName)}";
+        string? headRight = null;
         if (!sourceSide)
         {
             (int width, int height) = _previewSize();
-            headRight += $" · {width}×{height}";
+            headRight = $"#{selected.Index} {ShortDeviceName(selected.DeviceName)} · {width}×{height}";
         }
 
         DrawBlockHead(graphics, block, title, headRight);
 
-        int reserved = sourceSide ? 0 : PreviewControlAreaHeight;
+        if (sourceSide)
+        {
+            DrawQuietButton(graphics, ReenumerateButtonRect, "重新枚举", PanelAction.Reenumerate);
+        }
+
+        int reserved = sourceSide ? SourceControlAreaHeight : PreviewControlAreaHeight;
         List<(MonitorDescriptor Monitor, Rectangle Bounds)> cards = LayoutCards(block, sourceSide, reserved);
         foreach ((MonitorDescriptor monitor, Rectangle bounds) in cards)
         {
@@ -1699,8 +2749,7 @@ internal sealed class MainPanelWindow : Form
 
         if (sourceSide)
         {
-            DrawSourceInfoRows(graphics, block, cards);
-            DrawSourceHint(graphics, block, cards);
+            DrawSourceControlRows(graphics);
         }
         else
         {
@@ -1708,67 +2757,55 @@ internal sealed class MainPanelWindow : Form
         }
     }
 
-    private void DrawSourceInfoRows(
-        Graphics graphics,
-        Rectangle block,
-        List<(MonitorDescriptor Monitor, Rectangle Bounds)> cards)
+    private void DrawSourceControlRows(Graphics graphics)
     {
-        int top = cards.Count > 0
-            ? cards[^1].Bounds.Bottom + S(8)
-            : block.Y + S(BlockHeadHeight) + S(8);
-        int x = block.X + S(10);
-        int width = block.Width - S(20);
+        Rectangle cursorRow = SourceRowRect(0);
+        DrawPreviewRowLabel(graphics, cursorRow, "捕获鼠标光标");
+        DrawToggle(graphics, ToggleRect(cursorRow), _isCursorCaptured(), PanelAction.ToggleCursorCapture);
 
-        DrawLine(graphics, x, top - S(4), x + width, top - S(4), PanelTheme.Line);
-
-        bool excluded = _captureExcluded();
-        for (int index = 0; index < 3; index++)
-        {
-            var row = new Rectangle(x, top + (index * (S(21) + S(3))), width, S(21));
-
-            switch (index)
-            {
-                case 0:
-                    DrawInfoRow(
-                        graphics,
-                        row,
-                        "捕获隐身",
-                        excluded ? "已启用" : "不可用",
-                        excluded ? PanelTheme.Ok : PanelTheme.Warn);
-                    break;
-                case 1:
-                    DrawInfoRow(graphics, row, "采集路径", "WGC · 显存零拷贝", null);
-                    break;
-                default:
-                    DrawInfoRow(graphics, row, "帧池", "2", null);
-                    break;
-            }
-        }
-    }
-
-    private void DrawSourceHint(
-        Graphics graphics,
-        Rectangle block,
-        List<(MonitorDescriptor Monitor, Rectangle Bounds)> cards)
-    {
-        int hintTop = block.Bottom - S(26);
-        int lastBottom = cards.Count > 0
-            ? cards[^1].Bounds.Bottom + S((21 * 3) + (3 * 2))
-            : block.Y + S(BlockHeadHeight);
-        if (hintTop - lastBottom < S(8))
-        {
-            return;
-        }
-
-        DrawLine(graphics, block.X + S(10), hintTop - S(6), block.Right - S(10), hintTop - S(6), PanelTheme.Line);
+        Rectangle selfRow = SourceRowRect(1);
+        Rectangle selfLabel = new(cursorRow.X, selfRow.Y, selfRow.Width - S(210), selfRow.Height);
         DrawText(
             graphics,
-            "同一块屏不能同时作为源与输出；热插拔后自动重新枚举",
+            "捕获自身窗口",
+            PanelTheme.Small,
+            PanelTheme.Foreground2,
+            selfLabel,
+            StringAlignment.Near,
+            StringAlignment.Center,
+            ellipsis: false);
+        DrawText(
+            graphics,
+            "以黑块出现",
             PanelTheme.Small,
             PanelTheme.Foreground3,
-            new Rectangle(block.X + S(10), hintTop, block.Width - S(20), S(16)),
+            new Rectangle(selfLabel.Right + S(6), selfRow.Y, S(88), selfRow.Height),
             StringAlignment.Near,
-            StringAlignment.Center);
+            StringAlignment.Center,
+            ellipsis: false);
+        DrawToggle(graphics, ToggleRect(selfRow), _isSelfCaptured(), PanelAction.ToggleSelfCapture);
+
+        DrawInfoRow(graphics, SourceRowRect(2), "采集路径", "WGC · 显存零拷贝", null);
+        DrawInfoRow(graphics, SourceRowRect(3), "帧池", "2", null);
+
+        Rectangle stealthRow = SourceRowRect(4);
+        DrawText(
+            graphics,
+            "隐身状态",
+            PanelTheme.Small,
+            PanelTheme.Foreground3,
+            new Rectangle(stealthRow.X, stealthRow.Y, stealthRow.Width / 2, stealthRow.Height),
+            StringAlignment.Near,
+            StringAlignment.Center,
+            ellipsis: false);
+
+        bool excluded = _captureExcluded();
+        var pill = new Rectangle(
+            stealthRow.Right - S(122),
+            stealthRow.Y + ((stealthRow.Height - S(19)) / 2),
+            S(122),
+            S(19));
+        DrawPill(graphics, pill, excluded ? "已排除出捕获" : "会出现在捕获中", excluded ? PanelTheme.Ok : PanelTheme.Warn);
     }
 
     private static void DrawInfoRow(Graphics graphics, Rectangle row, string label, string value, Color? valueColor)
@@ -1803,7 +2840,11 @@ internal sealed class MainPanelWindow : Form
         DrawPreviewRowLabel(graphics, overlay, "窗口内读数");
         DrawToggle(graphics, ToggleRect(overlay), _isOverlayVisible(), PanelAction.ToggleOverlay);
 
-        Rectangle scaleRow = PreviewRowRect(2);
+        Rectangle topMost = PreviewRowRect(2);
+        DrawPreviewRowLabel(graphics, topMost, "始终最前");
+        DrawToggle(graphics, ToggleRect(topMost), _isTopMost(), PanelAction.ToggleTopMost);
+
+        Rectangle scaleRow = PreviewRowRect(3);
         DrawPreviewRowLabel(graphics, scaleRow, "窗口尺寸");
         int scale = _previewScale();
         Rectangle[] scaleChips = ChipRects(scaleRow, ScaleActions.Length, S(40));
@@ -1817,7 +2858,7 @@ internal sealed class MainPanelWindow : Form
                 ScaleActions[index]);
         }
 
-        Rectangle anchorRow = PreviewRowRect(3);
+        Rectangle anchorRow = PreviewRowRect(4);
         DrawPreviewRowLabel(graphics, anchorRow, "贴边位置");
         PreviewAnchor anchor = _previewAnchor();
         Rectangle[] anchorChips = ChipRects(anchorRow, AnchorChips.Length, S(46));
@@ -1827,7 +2868,7 @@ internal sealed class MainPanelWindow : Form
             DrawChip(graphics, anchorChips[index], label, anchor == value, action);
         }
 
-        Rectangle latencyRow = PreviewRowRect(4);
+        Rectangle latencyRow = PreviewRowRect(5);
         DrawPreviewRowLabel(graphics, latencyRow, "帧延迟上限");
         DrawText(
             graphics,
@@ -2067,7 +3108,7 @@ internal sealed class MainPanelWindow : Form
             StringAlignment.Center);
 
         Rectangle button = TestStartButtonRect;
-        bool hover = !_benchmarkRunning && _hover == PanelAction.StartBenchmark;
+        bool hover = _hover == (_benchmarkRunning ? PanelAction.StopBenchmark : PanelAction.StartBenchmark);
         using (var path = Rounded(button, S(2)))
         {
             Color fill = _benchmarkRunning
@@ -2078,18 +3119,18 @@ internal sealed class MainPanelWindow : Form
                 graphics.FillPath(brush, path);
             }
 
-            if (_benchmarkRunning)
+            using var pen = new Pen(_benchmarkRunning ? PanelTheme.Error : PanelTheme.Line2, PenWidth(1));
+            if (_benchmarkRunning || hover)
             {
-                using var pen = new Pen(PanelTheme.Line2, PenWidth(1));
                 graphics.DrawPath(pen, path);
             }
         }
 
         DrawText(
             graphics,
-            _benchmarkRunning ? "运行中…" : $"开始测试 · {FormatDuration(_testDuration())}",
+            _benchmarkRunning ? "停止测试" : $"开始测试 · {FormatDuration(_testDuration())}",
             PanelTheme.BodyStrong,
-            _benchmarkRunning ? PanelTheme.Foreground3 : PanelTheme.AmberInk,
+            _benchmarkRunning ? PanelTheme.Error : PanelTheme.AmberInk,
             button,
             StringAlignment.Center,
             StringAlignment.Center,
@@ -2102,7 +3143,7 @@ internal sealed class MainPanelWindow : Form
         DrawBlock(graphics, block);
 
         string right = _benchmarkRunning
-            ? "运行中"
+            ? "运行中 · 与 0.0.2 基线对照"
             : _lastBenchmark is { } last
                 ? $"{last.StartedAt:MM-dd HH:mm} · {FormatDuration((int)last.Duration.TotalSeconds)}"
                 : "尚未运行";
@@ -2247,7 +3288,7 @@ internal sealed class MainPanelWindow : Form
 
         DrawTestCell(graphics, "指标", PanelTheme.Small, PanelTheme.Foreground3, body, columnFrom: 0, columnTo: 1, 0, headerHeight, StringAlignment.Near);
         DrawTestCell(graphics, "本次", PanelTheme.Small, PanelTheme.Foreground3, body, 1, 2, 0, headerHeight, StringAlignment.Near);
-        DrawTestCell(graphics, "目标", PanelTheme.Small, PanelTheme.Foreground3, body, 2, 3, 0, headerHeight, StringAlignment.Near);
+        DrawTestCell(graphics, "基线 0.0.2", PanelTheme.Small, PanelTheme.Foreground3, body, 2, 3, 0, headerHeight, StringAlignment.Near);
         DrawTestCell(graphics, "判定", PanelTheme.Small, PanelTheme.Foreground3, body, 3, 4, 0, headerHeight, StringAlignment.Far);
 
         double dropRate = result.Captured == 0 ? 0 : result.Dropped / (double)result.Captured;
@@ -2256,25 +3297,26 @@ internal sealed class MainPanelWindow : Form
         bool dropOk = dropRate < 0.001;
         bool cpuOk = result.CpuPercentSingleCore <= 20;
 
-        (string Name, string Value, string Target, string Verdict, Color Color)[] rows =
+        // 基线取第 8 节记录的 0.0.2 CPU 读回路径实测值
+        (string Name, string Value, string Baseline, string Verdict, Color Color)[] rows =
         [
-            ("捕获帧率", $"{result.CaptureFps:F1} fps", "跟随源", "—", PanelTheme.Foreground3),
-            ("呈现帧率", $"{result.PresentFps:F1} fps", "跟随源", "—", PanelTheme.Foreground3),
+            ("捕获帧率", $"{result.CaptureFps:F1} fps", "—", "—", PanelTheme.Foreground3),
+            ("呈现帧率", $"{result.PresentFps:F1} fps", "24–32 fps", "—", PanelTheme.Foreground3),
             ("回调年龄 p95", $"{result.Age.P95:F1} ms", "—", "—", PanelTheme.Foreground3),
-            ("端到端 p95", $"{result.Present.P95:F1} ms", "≤ 20 ms", p95Ok ? "通过" : "未通过", p95Ok ? PanelTheme.Ok : PanelTheme.Error),
-            ("端到端 max", $"{result.Present.Max:F1} ms", "≤ 35 ms", maxOk ? "通过" : "未通过", maxOk ? PanelTheme.Ok : PanelTheme.Error),
-            ("丢帧率", $"{dropRate * 100:F2}%", "< 0.1%", dropOk ? "通过" : "未通过", dropOk ? PanelTheme.Ok : PanelTheme.Error),
-            ("CPU", $"{result.CpuPercentSingleCore:F1}% 单核", "≤ 20%", cpuOk ? "通过" : "未通过", cpuOk ? PanelTheme.Ok : PanelTheme.Error),
+            ("端到端 p95", $"{result.Present.P95:F1} ms", "39–57 ms", p95Ok ? "通过" : "未通过", p95Ok ? PanelTheme.Ok : PanelTheme.Error),
+            ("端到端 max", $"{result.Present.Max:F1} ms", "70 ms", maxOk ? "通过" : "未通过", maxOk ? PanelTheme.Ok : PanelTheme.Error),
+            ("丢帧率", $"{dropRate * 100:F2}%", "约一半", dropOk ? "通过" : "未通过", dropOk ? PanelTheme.Ok : PanelTheme.Error),
+            ("CPU", $"{result.CpuPercentSingleCore:F1}% 单核", "约 100%", cpuOk ? "通过" : "未通过", cpuOk ? PanelTheme.Ok : PanelTheme.Error),
         ];
 
         for (int index = 0; index < rows.Length; index++)
         {
             int offset = headerHeight + (index * rowHeight);
-            (string name, string value, string target, string verdict, Color color) = rows[index];
+            (string name, string value, string baseline, string verdict, Color color) = rows[index];
 
             DrawTestCell(graphics, name, PanelTheme.Small, PanelTheme.Foreground2, body, 0, 1, offset, rowHeight, StringAlignment.Near);
             DrawTestCell(graphics, value, PanelTheme.MonoSmall, PanelTheme.Foreground, body, 1, 2, offset, rowHeight, StringAlignment.Near);
-            DrawTestCell(graphics, target, PanelTheme.MonoSmall, PanelTheme.Foreground3, body, 2, 3, offset, rowHeight, StringAlignment.Near);
+            DrawTestCell(graphics, baseline, PanelTheme.MonoSmall, PanelTheme.Foreground3, body, 2, 3, offset, rowHeight, StringAlignment.Near);
             DrawTestCell(graphics, verdict, PanelTheme.Small, color, body, 3, 4, offset, rowHeight, StringAlignment.Far);
         }
 
@@ -2378,20 +3420,178 @@ internal sealed class MainPanelWindow : Form
             StringAlignment.Center);
     }
 
-    private void DrawPlaceholder(Graphics graphics, string title, string note)
+    private void DrawDiagnosticsView(Graphics graphics)
     {
-        var block = new Rectangle(MainRect.X + S(18), MainRect.Y + S(14), MainRect.Width - S(36), S(180));
+        DrawDiagnosticsDevice(graphics);
+        DrawDiagnosticsLog(graphics);
+    }
+
+    private void DrawDiagnosticsDevice(Graphics graphics)
+    {
+        Rectangle block = DiagnosticsDeviceRect;
         DrawBlock(graphics, block);
-        DrawBlockHead(graphics, block, title, right: null);
+        DrawBlockHead(graphics, block, "设备与管线", right: null);
+        DrawQuietButton(graphics, DiagnosticsExportButtonRect, "导出诊断包", PanelAction.ExportDiagnostics);
+
+        IReadOnlyList<DiagnosticEntry> entries = _diagnosticsSnapshot;
+        int rows = (entries.Count + 1) / 2;
+        int bodyTop = block.Y + S(BlockHeadHeight) + S(8);
+        int rowHeight = S(24);
+        int columnWidth = (block.Width - S(24)) / 2;
+        int labelWidth = S(88);
+
+        for (int row = 0; row < rows; row++)
+        {
+            DrawDiagnosticCell(
+                graphics,
+                entries[row],
+                new Rectangle(block.X + S(12), bodyTop + (row * rowHeight), columnWidth, S(20)),
+                labelWidth);
+
+            int rightIndex = row + rows;
+            if (rightIndex < entries.Count)
+            {
+                DrawDiagnosticCell(
+                    graphics,
+                    entries[rightIndex],
+                    new Rectangle(
+                        block.X + S(12) + columnWidth + S(12),
+                        bodyTop + (row * rowHeight),
+                        columnWidth,
+                        S(20)),
+                    labelWidth);
+            }
+        }
+
+        if (_adapterFallback())
+        {
+            DrawText(
+                graphics,
+                "适配器已降级：高性能适配器不可用，呈现路径可能受影响",
+                PanelTheme.Small,
+                PanelTheme.Warn,
+                new Rectangle(
+                    block.X + S(12),
+                    block.Bottom - S(30),
+                    block.Width - S(24),
+                    S(20)),
+                StringAlignment.Near,
+                StringAlignment.Center);
+        }
+    }
+
+    private void DrawDiagnosticCell(
+        Graphics graphics,
+        DiagnosticEntry entry,
+        Rectangle area,
+        int labelWidth)
+    {
+        DrawText(
+            graphics,
+            entry.Label,
+            PanelTheme.Small,
+            PanelTheme.Foreground3,
+            new Rectangle(area.X, area.Y, labelWidth, area.Height),
+            StringAlignment.Near,
+            StringAlignment.Center,
+            ellipsis: false);
 
         DrawText(
             graphics,
-            note,
-            PanelTheme.Body,
-            PanelTheme.Foreground3,
-            new Rectangle(block.X + S(12), block.Y + S(BlockHeadHeight), block.Width - S(24), block.Height - S(BlockHeadHeight)),
+            entry.Value,
+            PanelTheme.Small,
+            PanelTheme.Foreground2,
+            new Rectangle(area.X + labelWidth + S(6), area.Y, area.Width - labelWidth - S(6), area.Height),
             StringAlignment.Near,
             StringAlignment.Center);
+    }
+
+    private void DrawDiagnosticsLog(Graphics graphics)
+    {
+        Rectangle block = DiagnosticsLogRect;
+        DrawBlock(graphics, block);
+        DrawBlockHead(graphics, block, "最近日志", right: null);
+        DrawQuietButton(graphics, DiagnosticsLogButtonRect, "日志目录", PanelAction.OpenLog);
+        DrawQuietButton(
+            graphics,
+            DiagnosticsCopyButtonRect,
+            "复制诊断摘要",
+            PanelAction.CopyDiagnostics);
+
+        int visible = DiagnosticsLogVisibleLines;
+        int end = Math.Max(0, _logLines.Length - _logScroll);
+        int start = Math.Max(0, end - visible);
+        int y = DiagnosticsLogBodyTop;
+
+        if (_logLines.Length == 0)
+        {
+            DrawText(
+                graphics,
+                "暂无日志。",
+                PanelTheme.MonoSmall,
+                PanelTheme.Foreground3,
+                new Rectangle(block.X + S(12), DiagnosticsLogBodyTop, block.Width - S(24), S(20)),
+                StringAlignment.Near,
+                StringAlignment.Center);
+        }
+
+        for (int index = start; index < end; index++)
+        {
+            string line = _logLines[index];
+            DrawText(
+                graphics,
+                line,
+                PanelTheme.MonoSmall,
+                LogLineColor(line),
+                new Rectangle(
+                    block.X + S(12),
+                    y,
+                    block.Width - S(24),
+                    DiagnosticsLogLineHeight),
+                StringAlignment.Near,
+                StringAlignment.Center);
+            y += DiagnosticsLogLineHeight;
+        }
+
+        bool showNotice = _diagnosticsNotice is not null
+            && (DateTime.Now - _diagnosticsNoticeAt).TotalSeconds < 4;
+
+        string footer = showNotice
+            ? _diagnosticsNotice!
+            : _logLines.Length > visible
+                ? $"滚轮查看更早记录 · 已显示第 {start + 1}–{end} 行"
+                : $"仅显示最近 {visible} 行";
+
+        DrawText(
+            graphics,
+            footer,
+            PanelTheme.MonoSmall,
+            showNotice ? PanelTheme.Foreground2 : PanelTheme.Foreground3,
+            new Rectangle(
+                block.X + S(12),
+                block.Bottom - S(32),
+                block.Width - S(24) - S(124),
+                S(20)),
+            StringAlignment.Near,
+            StringAlignment.Center);
+    }
+
+    private static Color LogLineColor(string line)
+    {
+        if (line.Contains("失败", StringComparison.Ordinal)
+            || line.Contains("[致命]", StringComparison.Ordinal))
+        {
+            return PanelTheme.Error;
+        }
+
+        if (line.Contains("警告", StringComparison.Ordinal)
+            || line.Contains("降级", StringComparison.Ordinal)
+            || line.Contains("回退", StringComparison.Ordinal))
+        {
+            return PanelTheme.Warn;
+        }
+
+        return PanelTheme.Foreground2;
     }
 
     private void DrawAside(Graphics graphics, Rectangle aside, bool drawer)
@@ -2759,15 +3959,6 @@ internal sealed class MainPanelWindow : Form
         int y = ClientSize.Height - height;
         DrawLine(graphics, 0, y, ClientSize.Width, y, PanelTheme.Line);
 
-        DrawText(
-            graphics,
-            $"日志 {_logFilePath}",
-            PanelTheme.MonoSmall,
-            PanelTheme.Foreground3,
-            new Rectangle(S(14), y, ClientSize.Width - S(320), height),
-            StringAlignment.Near,
-            StringAlignment.Center);
-
         int versionWidth = S(48);
         int versionX = ClientSize.Width - S(14) - versionWidth;
         DrawText(
@@ -2780,10 +3971,36 @@ internal sealed class MainPanelWindow : Form
             StringAlignment.Center,
             ellipsis: false);
 
-        DrawShortcut(graphics, versionX - S(14), y, height, ["Ctrl", "Alt", "Q"], "退出");
+        int exitWidth = DrawShortcut(
+            graphics, versionX - S(14), y, height, _exitShortcutKeys, "退出");
+        int pauseWidth = DrawShortcut(
+            graphics,
+            versionX - S(14) - exitWidth - S(14),
+            y,
+            height,
+            _pauseShortcutKeys,
+            "暂停");
+
+        // 日志路径只占快捷键左侧的剩余宽度，避免长路径压到按键提示上
+        int logRight = versionX - S(14) - exitWidth - S(14) - pauseWidth - S(14);
+        DrawText(
+            graphics,
+            $"日志 {_logFilePath}",
+            PanelTheme.MonoSmall,
+            PanelTheme.Foreground3,
+            new Rectangle(S(14), y, Math.Max(0, logRight - S(14)), height),
+            StringAlignment.Near,
+            StringAlignment.Center);
     }
 
-    private void DrawShortcut(Graphics graphics, int right, int y, int height, string[] keys, string label)
+    /// <summary>绘制一组按键提示，返回整组占用的宽度，供右侧继续往左排布。</summary>
+    private int DrawShortcut(
+        Graphics graphics,
+        int right,
+        int y,
+        int height,
+        string[] keys,
+        string label)
     {
         int gap = S(3);
         int padding = S(4);
@@ -2842,6 +4059,8 @@ internal sealed class MainPanelWindow : Form
             StringAlignment.Near,
             StringAlignment.Center,
             ellipsis: false);
+
+        return total;
     }
 
     private void DrawCornerTicks(Graphics graphics, Rectangle rect, Color color)
@@ -3055,6 +4274,54 @@ internal sealed class MainPanelWindow : Form
         return new Rectangle(x, y, width, height);
     }
 
+    private Rectangle RailCollapseButtonRect => new(
+        (S(RailWidth) - S(40)) / 2,
+        BodyRect.Bottom - S(56),
+        S(40),
+        S(48));
+
+    private Rectangle CollapsedExpandButtonRect => new(
+        ClientSize.Width - S(12) - S(64),
+        (ClientSize.Height - S(24)) / 2,
+        S(64),
+        S(24));
+
+    private Rectangle CollapsedToggleRect => new(
+        CollapsedExpandButtonRect.X - S(84),
+        (ClientSize.Height - S(15)) / 2,
+        S(28),
+        S(15));
+
+    private Rectangle OnboardDialogRect => new(
+        (ClientSize.Width - S(720)) / 2,
+        (ClientSize.Height - S(460)) / 2,
+        S(720),
+        S(460));
+
+    private Rectangle OnboardSkipRect => new(
+        OnboardDialogRect.X + S(20),
+        OnboardDialogRect.Bottom - S(52),
+        S(100),
+        S(28));
+
+    private Rectangle OnboardNextRect => new(
+        OnboardDialogRect.Right - S(20) - S(140),
+        OnboardDialogRect.Bottom - S(52),
+        S(140),
+        S(28));
+
+    private Rectangle OnboardPrevRect => new(
+        OnboardNextRect.X - S(12) - S(96),
+        OnboardDialogRect.Bottom - S(52),
+        S(96),
+        S(28));
+
+    private Rectangle OnboardSwapRect => new(
+        OnboardDialogRect.Right - S(20) - S(92),
+        OnboardDialogRect.Y + S(BlockHeadHeight) + S(6),
+        S(92),
+        S(24));
+
     private static string ShortDeviceName(string deviceName)
     {
         int separator = deviceName.LastIndexOf('\\');
@@ -3107,21 +4374,6 @@ internal sealed class MainPanelWindow : Form
         pen.Dispose();
     }
 
-    private void DrawDocumentIcon(Graphics graphics, Rectangle box, Color color)
-    {
-        var pen = new Pen(color, PenWidth(1.4f));
-        int left = box.X + S(4);
-        int top = box.Y + S(2);
-        int right = box.Right - S(4);
-        int bottom = box.Bottom - S(2);
-
-        graphics.DrawRectangle(pen, left, top, right - left, bottom - top);
-        graphics.DrawLine(pen, left + S(2), top + S(6), right - S(2), top + S(6));
-        graphics.DrawLine(pen, left + S(2), top + S(9), right - S(2), top + S(9));
-        graphics.DrawLine(pen, left + S(2), top + S(12), left + S(6), top + S(12));
-        pen.Dispose();
-    }
-
     protected override void Dispose(bool disposing)
     {
         if (disposing)
@@ -3129,6 +4381,7 @@ internal sealed class MainPanelWindow : Form
             _timer.Dispose();
             _statusTimer.Dispose();
             _benchmarkTimer.Dispose();
+            _animationTimer.Dispose();
         }
 
         base.Dispose(disposing);

@@ -17,13 +17,15 @@ internal sealed class GpuDevice : IDisposable
         ID3D11DeviceContext context,
         FeatureLevel featureLevel,
         string adapterName,
-        Luid adapterLuid)
+        Luid adapterLuid,
+        string adapterSelection)
     {
         Device = device;
         Context = context;
         FeatureLevel = featureLevel;
         AdapterName = adapterName;
         AdapterLuid = adapterLuid;
+        AdapterSelection = adapterSelection;
     }
 
     public ID3D11Device Device { get; }
@@ -35,6 +37,9 @@ internal sealed class GpuDevice : IDisposable
     public string AdapterName { get; }
 
     public Luid AdapterLuid { get; }
+
+    /// <summary>实际选中的适配器来源，诊断视图与降级提示据此区分正常路径与回退路径。</summary>
+    public string AdapterSelection { get; }
 
     public object ContextLock { get; } = new();
 

@@ -48,4 +48,16 @@ public sealed record AppSettings
 
     /// <summary>面板基准测试的单次时长，单位秒。</summary>
     public int TestDurationSeconds { get; init; } = 60;
+
+    /// <summary>是否让 WGC 把鼠标光标画进捕获帧。</summary>
+    public bool CaptureCursor { get; init; } = true;
+
+    /// <summary>是否把本程序窗口也拍进捕获结果（开启后预览窗以黑块出现在画面里）。</summary>
+    public bool CaptureSelf { get; init; }
+
+    /// <summary>预览窗是否始终位于其他窗口之上。</summary>
+    public bool PreviewTopMost { get; init; } = true;
+
+    /// <summary>是否已完成首次引导；为 false 时打开面板会显示三步向导。</summary>
+    public bool Onboarded { get; init; }
 }

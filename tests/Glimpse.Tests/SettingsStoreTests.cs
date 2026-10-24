@@ -79,6 +79,10 @@ public sealed class SettingsStoreTests : IDisposable
         Assert.Equal(50, settings.PreviewScalePercent);
         Assert.Equal(PreviewAnchor.BottomRight, settings.PreviewAnchor);
         Assert.Equal(60, settings.TestDurationSeconds);
+        Assert.True(settings.CaptureCursor);
+        Assert.False(settings.CaptureSelf);
+        Assert.True(settings.PreviewTopMost);
+        Assert.False(settings.Onboarded);
     }
 
     public void Dispose()

@@ -44,6 +44,52 @@ internal sealed class DiagnosticsLog : IDisposable
 
     public string? LogFilePath { get; }
 
+    /// <summary>
+    /// 读取日志尾部若干行。以共享读打开，运行中也可调用；
+    /// 只读取文件末尾一段，避免长稳测试后的大日志整份载入。
+    /// </summary>
+    public string[] ReadTail(int maxLines)
+    {
+        if (maxLines <= 0 || LogFilePath is null)
+        {
+            return [];
+        }
+
+        try
+        {
+            using var stream = new FileStream(
+                LogFilePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite);
+
+            long start = Math.Max(0, stream.Length - Math.Max(64 * 1024, maxLines * 160L));
+            stream.Seek(start, SeekOrigin.Begin);
+
+            using var reader = new StreamReader(stream);
+            string[] lines = reader.ReadToEnd().Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+            // 从文件中段开始时首行可能被截断，丢弃它
+            int skip = start > 0 && lines.Length > 0 ? 1 : 0;
+            int count = Math.Min(maxLines, lines.Length - skip);
+            var result = new string[count];
+            for (int index = 0; index < count; index++)
+            {
+                result[index] = lines[lines.Length - count + index].TrimEnd('\r');
+            }
+
+            return result;
+        }
+        catch (IOException)
+        {
+            return [];
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return [];
+        }
+    }
+
     public void WriteLine(string message)
     {
         lock (_gate)

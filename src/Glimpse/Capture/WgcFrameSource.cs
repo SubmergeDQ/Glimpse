@@ -49,6 +49,7 @@ internal sealed class WgcFrameSource : IFrameSource
 
     private volatile bool _running;
     private volatile bool _disposed;
+    private volatile bool _cursorCaptureEnabled = true;
     private int _errorCount;
 
     public WgcFrameSource(
@@ -81,6 +82,26 @@ internal sealed class WgcFrameSource : IFrameSource
 
     public (int Width, int Height) FrameSize =>
         (Volatile.Read(ref _frameWidth), Volatile.Read(ref _frameHeight));
+
+    /// <summary>是否把系统光标画进捕获帧。可在运行中切换，立即作用于当前会话。</summary>
+    public bool IsCursorCaptureEnabled
+    {
+        get => _cursorCaptureEnabled;
+        set
+        {
+            _cursorCaptureEnabled = value;
+
+            lock (_callbackGate)
+            {
+                if (_session is null || !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
+                {
+                    return;
+                }
+
+                _session.IsCursorCaptureEnabled = value;
+            }
+        }
+    }
 
     public void StartCapture()
     {
@@ -161,7 +182,7 @@ internal sealed class WgcFrameSource : IFrameSource
 
         if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
         {
-            _session.IsCursorCaptureEnabled = true;
+            _session.IsCursorCaptureEnabled = _cursorCaptureEnabled;
         }
 
         // 去掉被捕获屏上的黄色隐私边框，否则投屏观众会看到

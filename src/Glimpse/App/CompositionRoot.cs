@@ -18,7 +18,9 @@ namespace Glimpse.App;
 internal static class CompositionRoot
 {
     private const int HotKeyExit = 2;
+    private const int HotKeyPause = 3;
     private const uint VirtualKeyQ = 0x51;
+    private const uint VirtualKeyP = 0x50;
 
     public static void Run(string[] args)
     {
@@ -121,12 +123,20 @@ internal static class CompositionRoot
         D3DPreviewHost? host = null;
         RenderLoop? loop = null;
         GlobalHotKey? exitHotKey = null;
+        GlobalHotKey? pauseHotKey = null;
         TrayIconHost? tray = null;
         System.Windows.Forms.Timer? healthTimer = null;
         System.Windows.Forms.Timer? displayDebounce = null;
         bool exiting = false;
         bool recovering = false;
-        bool captureExcluded = false;
+        bool paused = false;
+        bool captureExcluded = settings.CaptureSelf ? false : true;
+        bool captureCursor = settings.CaptureCursor;
+        bool captureSelf = settings.CaptureSelf;
+        bool previewTopMost = settings.PreviewTopMost;
+        // 热键注册回退后状态栏提示要显示真实组合，不能写死首选值
+        string[] exitShortcutKeys = ["Ctrl", "Alt", "Q"];
+        string[] pauseShortcutKeys = ["Ctrl", "Alt", "P"];
         int recoverAttempts = 0;
         int previewScale = Math.Clamp(settings.PreviewScalePercent, 1, 100);
         PreviewAnchor previewAnchor = settings.PreviewAnchor;
@@ -139,7 +149,10 @@ internal static class CompositionRoot
             gpu = D3D11Interop.CreateDevice(previewMonitor.Handle);
             log.WriteLine($"[GPU] {gpu.AdapterName}，特性级别 {gpu.FeatureLevel}");
 
-            session = new CaptureSession(gpu, sourceMonitor, clock, stats, captureLatency, log);
+            session = new CaptureSession(gpu, sourceMonitor, clock, stats, captureLatency, log)
+            {
+                IsCursorCaptureEnabled = captureCursor,
+            };
             WgcFrameSource source = session.Source;
 
             window = new PreviewWindow();
@@ -149,7 +162,7 @@ internal static class CompositionRoot
             // 先让 WinForms 完成首次布局，再按物理像素覆盖位置与尺寸，
             // 避免 Show 时的默认布局覆盖 SetWindowPos 的结果。
             previewWindow.Show();
-            previewWindow.ReassertTopMost();
+            previewWindow.SetTopMostEnabled(previewTopMost);
 
             IntPtr windowHandle = previewWindow.Handle;
             (int x, int y, int width, int height) = ResolvePreviewBounds(
@@ -160,7 +173,7 @@ internal static class CompositionRoot
             WindowPlacement.Place(windowHandle, x, y, width, height);
 
             // 显示之后再应用一次置顶，构造期设置的 TopMost 不会落到 WS_EX_TOPMOST
-            previewWindow.ReassertTopMost();
+            previewWindow.SetTopMostEnabled(previewTopMost);
             log.WriteLine(
                 $"[窗口] 位置 ({x},{y}) {width}x{height}，置顶={WindowPlacement.IsTopMost(windowHandle)}");
 
@@ -199,7 +212,7 @@ internal static class CompositionRoot
             {
                 statsOverlay.Show();
                 PositionOverlay();
-                WindowCaptureExclusion.Apply(statsOverlay.Handle);
+                WindowCaptureExclusion.Apply(statsOverlay.Handle, !captureSelf);
             }
 
             void SetPreviewVisible(bool visible)
@@ -207,7 +220,7 @@ internal static class CompositionRoot
                 if (visible)
                 {
                     previewWindow.Show();
-                    previewWindow.ReassertTopMost();
+                    previewWindow.SetTopMostEnabled(previewTopMost);
 
                     if (overlayEnabled)
                     {
@@ -398,37 +411,135 @@ internal static class CompositionRoot
                 Execute();
             }
 
+            IReadOnlyList<DiagnosticEntry> BuildDiagnostics()
+            {
+                using System.Diagnostics.Process process = System.Diagnostics.Process.GetCurrentProcess();
+                int dpi = WindowPlacement.GetDpi(previewWindow.Handle);
+
+                string MonitorLabel(MonitorDescriptor monitor) =>
+                    $"#{monitor.Index} {(monitor.IsPrimary ? "主屏" : "副屏")} {monitor.Width}x{monitor.Height}";
+
+                return
+                [
+                    new DiagnosticEntry(
+                        "适配器",
+                        $"{gpu?.AdapterName ?? "—"} · {gpu?.AdapterSelection ?? "—"}"),
+                    new DiagnosticEntry("D3D 特性级别", gpu?.FeatureLevel.ToString() ?? "—"),
+                    new DiagnosticEntry("帧池缓冲", "2"),
+                    new DiagnosticEntry("交换链", "FLIP_DISCARD · 2 缓冲"),
+                    new DiagnosticEntry("合成", "DirectComposition"),
+                    new DiagnosticEntry("帧延迟上限", "1 帧"),
+                    new DiagnosticEntry("DPI", $"PerMonitorV2 · {dpi * 100 / 96}%"),
+                    new DiagnosticEntry("HDR", "SDR 输出"),
+                    new DiagnosticEntry("单实例", $"持有 · PID {Environment.ProcessId}"),
+                    new DiagnosticEntry(
+                        "内存 / 句柄",
+                        $"{process.WorkingSet64 / (1024 * 1024)} MB / {process.HandleCount}"),
+                    new DiagnosticEntry("捕获源", MonitorLabel(sourceMonitor)),
+                    new DiagnosticEntry("预览屏", MonitorLabel(previewMonitor)),
+                    new DiagnosticEntry("窗口隐身", captureExcluded ? "已排除 · 0x11" : "会出现在捕获中"),
+                    new DiagnosticEntry(
+                        "热键",
+                        $"退出 {string.Join("+", exitShortcutKeys)} · " +
+                        $"暂停 {string.Join("+", pauseShortcutKeys)}"),
+                ];
+            }
+
+            string? ExportDiagnosticsPackage(string summary)
+            {
+                try
+                {
+                    string path = Path.Combine(
+                        logDirectory,
+                        $"diagnostics-{DateTime.Now:yyyyMMdd-HHmmss}.txt");
+
+                    var lines = new List<string> { summary, string.Empty, "--- 最近 200 行日志 ---" };
+                    lines.AddRange(log.ReadTail(200));
+                    File.WriteAllLines(path, lines);
+
+                    log.WriteLine($"[诊断] 诊断包已写入 {path}");
+                    return path;
+                }
+                catch (Exception ex)
+                {
+                    log.WriteLine($"[诊断] 诊断包写入失败：{ex.Message}");
+                    return null;
+                }
+            }
+
             void OpenPanel()
             {
                 if (panel is null || panel.IsDisposed)
                 {
-                    panel = new MainPanelWindow(
-                        version,
-                        log.LogFilePath ?? string.Empty,
-                        liveStats,
-                        panelStatus,
-                        () => sourceMonitor,
-                        () => previewMonitor,
-                        () => monitors,
-                        SelectSource,
-                        SelectPreview,
-                        SwapDirection,
-                        () => previewWindow.Visible,
-                        TogglePreview,
-                        () => overlayEnabled,
-                        ToggleOverlay,
-                        () => previewScale,
-                        ApplyPreviewScale,
-                        () => previewAnchor,
-                        ApplyPreviewAnchor,
-                        StartPanelBenchmark,
-                        () => testDuration,
-                        SetTestDuration,
-                        () => gpu?.AdapterName ?? "—",
-                        () => captureExcluded,
-                        () => WindowPlacement.GetClientSize(previewWindow.Handle),
-                        () => TrayIconHost.OpenDirectory(logDirectory),
-                        () => RunBenchmark(TimeSpan.FromSeconds(60), silent: false));
+                    panel = new MainPanelWindow(new PanelBindings
+                    {
+                        Version = version,
+                        LogFilePath = log.LogFilePath ?? string.Empty,
+                        Stats = liveStats,
+                        Status = panelStatus,
+                        SourceMonitor = () => sourceMonitor,
+                        PreviewMonitor = () => previewMonitor,
+                        Monitors = () => monitors,
+                        SelectSource = SelectSource,
+                        SelectPreview = SelectPreview,
+                        SwapDirection = SwapDirection,
+                        Reenumerate = ReenumerateMonitors,
+                        IsPaused = () => paused,
+                        TogglePause = TogglePause,
+                        IsCursorCaptured = () => captureCursor,
+                        SetCursorCaptured = SetCaptureCursor,
+                        IsSelfCaptured = () => captureSelf,
+                        SetSelfCaptured = SetCaptureSelf,
+                        IsPreviewVisible = () => previewWindow.Visible,
+                        TogglePreview = TogglePreview,
+                        IsOverlayVisible = () => overlayEnabled,
+                        ToggleOverlay = ToggleOverlay,
+                        IsTopMost = () => previewTopMost,
+                        SetTopMost = SetPreviewTopMost,
+                        PreviewScale = () => previewScale,
+                        SetPreviewScale = ApplyPreviewScale,
+                        PreviewAnchor = () => previewAnchor,
+                        SetPreviewAnchor = ApplyPreviewAnchor,
+                        StartBenchmark = StartPanelBenchmark,
+                        TestDuration = () => testDuration,
+                        SetTestDuration = SetTestDuration,
+                        AdapterName = () => gpu?.AdapterName ?? "—",
+                        CaptureExcluded = () => captureExcluded,
+                        PreviewSize = () => WindowPlacement.GetClientSize(previewWindow.Handle),
+                        OpenLogDirectory = () => TrayIconHost.OpenDirectory(logDirectory),
+                        RunBenchmark = () => RunBenchmark(TimeSpan.FromSeconds(60), silent: false),
+                        ExitShortcutKeys = exitShortcutKeys,
+                        PauseShortcutKeys = pauseShortcutKeys,
+                        Diagnostics = BuildDiagnostics,
+                        ReadLogTail = log.ReadTail,
+                        ExportDiagnostics = ExportDiagnosticsPackage,
+                        AdapterFallback = () => gpu?.AdapterSelection.Contains("降级") == true,
+                        ShouldOnboard = () => !settings.Onboarded,
+                        StopBenchmark = () =>
+                        {
+                            log.WriteLine("[基准] 面板请求停止测试");
+                            benchmark.Stop();
+                        },
+                        CompleteOnboarding = () =>
+                        {
+                            if (settings.Onboarded)
+                            {
+                                return;
+                            }
+
+                            settings = settings with { Onboarded = true };
+
+                            try
+                            {
+                                settingsStore.Save(settings);
+                                log.WriteLine("[引导] 已完成首次引导并写入设置");
+                            }
+                            catch (Exception ex)
+                            {
+                                log.WriteLine($"[引导] 保存完成标记失败：{ex.Message}");
+                            }
+                        },
+                    });
                 }
 
                 panel.Show();
@@ -437,7 +548,11 @@ internal static class CompositionRoot
                     panel.WindowState = FormWindowState.Normal;
                 }
 
-                // 面板不参与置顶：预览窗常驻最上层，避免面板把预览画面整块盖住
+                // 面板按用户要求强制置顶；显示后再切换 TopMost 才能落到 WS_EX_TOPMOST
+                panel.SetTopMostEnabled(true);
+
+                // 面板可能整块盖在源屏上，打开后立即按当前设置重设窗口隐身
+                captureExcluded = RefreshCaptureExclusion();
                 panel.Activate();
             }
 
@@ -530,9 +645,19 @@ internal static class CompositionRoot
                     WindowPlacement.Move(previewWindow.Handle, anchorX, anchorY, nextWidth, nextHeight);
                 }
 
+                // 暂停期间切换源只重建窗口，不恢复采集
+                if (paused)
+                {
+                    activeSession.Stop();
+                }
+
                 tray?.SetStatusText($"捕获 #{monitor.Index} · 预览 #{previewMonitor.Index}");
                 log.WriteLine($"[切换] 已切换到显示器 #{monitor.Index}，窗口 {nextWidth}x{nextHeight}");
-                panelStatus.Publish(OkStatus());
+                if (!paused)
+                {
+                    panelStatus.Publish(OkStatus());
+                }
+
                 return true;
             }
 
@@ -632,6 +757,105 @@ internal static class CompositionRoot
                 panel?.RefreshNow();
             }
 
+            void TogglePause()
+            {
+                if (exiting)
+                {
+                    return;
+                }
+
+                if (!paused)
+                {
+                    try
+                    {
+                        paused = true;
+                        activeSession.Stop();
+                        activeLoop.Pause();
+                        panelStatus.Publish(PanelStatus.Paused("已暂停监看"));
+                        tray?.SetPaused(true);
+                        log.WriteLine("[监看] 已暂停：停止采集与呈现，保留最后一帧");
+                    }
+                    catch (Exception ex)
+                    {
+                        paused = false;
+                        panelStatus.Publish(PanelStatus.Error("暂停失败", ex.Message));
+                        log.WriteLine($"[监看] 暂停失败：{ex}");
+                    }
+                }
+                else
+                {
+                    try
+                    {
+                        activeSession.Start();
+                        activeLoop.Resume();
+                        paused = false;
+                        panelStatus.Publish(OkStatus());
+                        tray?.SetPaused(false);
+                        log.WriteLine("[监看] 已继续");
+                    }
+                    catch (Exception ex)
+                    {
+                        panelStatus.Publish(PanelStatus.Error("恢复监看失败", ex.Message));
+                        log.WriteLine($"[监看] 恢复失败：{ex}");
+                    }
+                }
+
+                panel?.RefreshNow();
+            }
+
+            void SetCaptureCursor(bool enabled)
+            {
+                captureCursor = enabled;
+                activeSession.IsCursorCaptureEnabled = enabled;
+                settings = settings with { CaptureCursor = enabled };
+                log.WriteLine(enabled ? "[采集] 已开启光标捕获" : "[采集] 已关闭光标捕获");
+                panel?.RefreshNow();
+            }
+
+            bool RefreshCaptureExclusion()
+            {
+                bool exclude = !captureSelf;
+                bool ok = WindowCaptureExclusion.Apply(windowHandle, exclude);
+                WindowCaptureExclusion.Apply(statsOverlay.Handle, exclude);
+
+                // 面板置顶后可能整块盖在源屏上，必须一并排除，否则会被拍进画面形成镜像
+                if (panel is { IsDisposed: false } currentPanel)
+                {
+                    ok &= WindowCaptureExclusion.Apply(currentPanel.Handle, exclude);
+                }
+
+                return exclude && ok;
+            }
+
+            void SetCaptureSelf(bool includeSelf)
+            {
+                captureSelf = includeSelf;
+                settings = settings with { CaptureSelf = includeSelf };
+                captureExcluded = RefreshCaptureExclusion();
+                log.WriteLine(
+                    includeSelf
+                        ? "[窗口] 已允许捕获本程序窗口（预览窗会以黑块出现在画面里）"
+                        : "[窗口] 已从屏幕捕获中排除");
+                panel?.RefreshNow();
+            }
+
+            void SetPreviewTopMost(bool enabled)
+            {
+                previewTopMost = enabled;
+                settings = settings with { PreviewTopMost = enabled };
+                previewWindow.SetTopMostEnabled(enabled);
+                log.WriteLine(
+                    $"[输出] 预览窗置顶={WindowPlacement.IsTopMost(previewWindow.Handle)}（设置 {enabled}）");
+                panel?.RefreshNow();
+            }
+
+            void ReenumerateMonitors()
+            {
+                log.WriteLine("[枚举] 手动重新枚举显示器");
+                HandleDisplayChange();
+                panel?.RefreshNow();
+            }
+
             // 同一块屏不能同时做源和输出：选择源时若命中当前预览屏，预览自动换到原来源
             void SelectSource(MonitorDescriptor monitor)
             {
@@ -711,7 +935,10 @@ internal static class CompositionRoot
 
                     gpu = D3D11Interop.CreateDevice(previewMonitor.Handle);
 
-                    activeSession = new CaptureSession(gpu, sourceMonitor, clock, stats, captureLatency, log);
+                    activeSession = new CaptureSession(gpu, sourceMonitor, clock, stats, captureLatency, log)
+                    {
+                        IsCursorCaptureEnabled = captureCursor,
+                    };
                     session = activeSession;
 
                     (int clientWidth, int clientHeight) =
@@ -742,6 +969,13 @@ internal static class CompositionRoot
                     activeSession.Start();
                     activeLoop.Start();
 
+                    // 恢复重建会重建渲染线程，暂停状态需要重新落到新链路上
+                    if (paused)
+                    {
+                        activeSession.Stop();
+                        activeLoop.Pause();
+                    }
+
                     recoverAttempts = 0;
                     if (healthTimer is not null)
                     {
@@ -749,7 +983,7 @@ internal static class CompositionRoot
                     }
 
                     log.WriteLine("[恢复] D3D 栈重建完成");
-                    panelStatus.Publish(OkStatus());
+                    panelStatus.Publish(paused ? PanelStatus.Paused("已暂停监看") : OkStatus());
                 }
                 catch (Exception ex)
                 {
@@ -854,8 +1088,10 @@ internal static class CompositionRoot
                 ToggleClickThrough,
                 () => previewWindow.Visible,
                 () => overlayEnabled,
+                () => paused,
                 TogglePreview,
                 ToggleOverlay,
+                TogglePause,
                 () => OpenPanel(),
                 RequestExit,
                 () => RunBenchmark(TimeSpan.FromSeconds(60), silent: false),
@@ -869,14 +1105,17 @@ internal static class CompositionRoot
 
             log.WriteLine("[托盘] 已创建，关闭窗口将收进托盘");
 
-            captureExcluded = WindowCaptureExclusion.Apply(windowHandle);
+            captureExcluded = RefreshCaptureExclusion();
             if (captureExcluded)
             {
                 log.WriteLine("[窗口] 已从屏幕捕获中排除");
             }
             else
             {
-                log.WriteLine("[窗口] 警告：系统不支持 WDA_EXCLUDEFROMCAPTURE，预览窗可能被拍进画面");
+                log.WriteLine(
+                    captureSelf
+                        ? "[窗口] 按设置允许捕获本程序窗口"
+                        : "[窗口] 警告：系统不支持 WDA_EXCLUDEFROMCAPTURE，预览窗可能被拍进画面");
             }
 
             exitHotKey = TryCreateHotKey(
@@ -885,14 +1124,48 @@ internal static class CompositionRoot
                 VirtualKeyQ,
                 "Ctrl+Alt+Q 退出",
                 RequestExit,
-                log)
-                ?? TryCreateHotKey(
+                log);
+
+            if (exitHotKey is null)
+            {
+                exitHotKey = TryCreateHotKey(
                     HotKeyExit,
                     GlobalHotKey.ControlShift,
                     VirtualKeyQ,
                     "Ctrl+Shift+Q 退出（备选）",
                     RequestExit,
                     log);
+
+                if (exitHotKey is not null)
+                {
+                    exitShortcutKeys = ["Ctrl", "Shift", "Q"];
+                }
+            }
+
+            // Ctrl+Alt+P 常被输入法或录屏软件占用，注册失败时退到 Ctrl+Shift+P
+            pauseHotKey = TryCreateHotKey(
+                HotKeyPause,
+                GlobalHotKey.ControlAlt,
+                VirtualKeyP,
+                "Ctrl+Alt+P 暂停/继续",
+                TogglePause,
+                log);
+
+            if (pauseHotKey is null)
+            {
+                pauseHotKey = TryCreateHotKey(
+                    HotKeyPause,
+                    GlobalHotKey.ControlShift,
+                    VirtualKeyP,
+                    "Ctrl+Shift+P 暂停/继续（备选）",
+                    TogglePause,
+                    log);
+
+                if (pauseHotKey is not null)
+                {
+                    pauseShortcutKeys = ["Ctrl", "Shift", "P"];
+                }
+            }
 
             try
             {
@@ -960,6 +1233,7 @@ internal static class CompositionRoot
             host?.Dispose();
             gpu?.Dispose();
             exitHotKey?.Dispose();
+            pauseHotKey?.Dispose();
         }
 
         reporter.ReportFinal();

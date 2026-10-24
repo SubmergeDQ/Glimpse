@@ -4,6 +4,7 @@ namespace Glimpse.Diagnostics;
 internal enum PanelStatusKind
 {
     Ok,
+    Paused,
     Switching,
     Error,
 }
@@ -20,6 +21,9 @@ internal readonly record struct PanelStatus(
 {
     public static PanelStatus Ok(string headline) =>
         new(PanelStatusKind.Ok, headline, null, DateTime.Now);
+
+    public static PanelStatus Paused(string headline) =>
+        new(PanelStatusKind.Paused, headline, null, DateTime.Now);
 
     public static PanelStatus Switching(string headline) =>
         new(PanelStatusKind.Switching, headline, null, DateTime.Now);

@@ -27,6 +27,7 @@ internal sealed class BenchmarkRunner
     private readonly Process _process = Process.GetCurrentProcess();
 
     private bool _running;
+    private CancellationTokenSource? _cancellation;
 
     public BenchmarkRunner(FrameStats stats, LatencyMonitor captureLatency, LatencyMonitor presentLatency)
     {
@@ -36,6 +37,9 @@ internal sealed class BenchmarkRunner
     }
 
     public bool IsRunning => _running;
+
+    /// <summary>提前结束当前测试，用已采集数据结算并照常返回结果。</summary>
+    public void Stop() => _cancellation?.Cancel();
 
     public async Task<BenchmarkResult> RunAsync(TimeSpan duration)
     {
@@ -55,12 +59,22 @@ internal sealed class BenchmarkRunner
         _captureLatency.BeginSession();
         _presentLatency.BeginSession();
 
+        using var cancellation = new CancellationTokenSource();
+        _cancellation = cancellation;
+        var stopwatch = Stopwatch.StartNew();
+
         try
         {
-            await Task.Delay(duration);
+            await Task.Delay(duration, cancellation.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // 用户停止测试：不丢弃已采集数据，按实际时长结算
         }
         finally
         {
+            stopwatch.Stop();
+            _cancellation = null;
             _running = false;
         }
 
@@ -71,12 +85,13 @@ internal sealed class BenchmarkRunner
         long presented = _stats.TotalPresented - presentedBefore;
         long dropped = _stats.TotalDropped - droppedBefore;
 
-        double seconds = duration.TotalSeconds;
+        TimeSpan actual = stopwatch.Elapsed;
+        double seconds = Math.Max(1.0, actual.TotalSeconds);
         double cpuPercent = (_process.TotalProcessorTime - cpuBefore).TotalSeconds / seconds * 100.0;
 
         return new BenchmarkResult(
             startedAt,
-            duration,
+            actual,
             captured,
             presented,
             dropped,

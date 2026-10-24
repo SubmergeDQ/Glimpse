@@ -47,4 +47,20 @@ public sealed class BenchmarkReportTests
         Assert.Contains("- 端到端 max：未通过", markdown);
         Assert.Contains("- CPU：未通过", markdown);
     }
+
+    [Fact]
+    public async Task StopEndsRunEarlyAndStillReturnsResult()
+    {
+        var runner = new BenchmarkRunner(new FrameStats(), new LatencyMonitor(), new LatencyMonitor());
+
+        Task<BenchmarkResult> run = runner.RunAsync(TimeSpan.FromSeconds(30));
+        await Task.Delay(150);
+        runner.Stop();
+
+        BenchmarkResult result = await run.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // 提前停止也必须有结果，且实际时长远短于请求的 30 秒
+        Assert.True(result.Duration < TimeSpan.FromSeconds(10));
+        Assert.False(runner.IsRunning);
+    }
 }

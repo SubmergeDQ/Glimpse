@@ -8,6 +8,10 @@ namespace Glimpse.Platform;
 /// </summary>
 internal static class WindowCaptureExclusion
 {
-    /// <summary>返回 false 表示当前系统不支持 WDA_EXCLUDEFROMCAPTURE。</summary>
-    public static bool Apply(IntPtr hwnd) => WindowInterop.SetCaptureExclusion(hwnd);
+    /// <summary>
+    /// 设置窗口是否从捕获中排除。返回 false 表示系统拒绝该设置，
+    /// 常见于低于 Windows 10 2004 的系统不支持 WDA_EXCLUDEFROMCAPTURE。
+    /// </summary>
+    public static bool Apply(IntPtr hwnd, bool exclude = true) =>
+        WindowInterop.SetCaptureExclusion(hwnd, exclude);
 }

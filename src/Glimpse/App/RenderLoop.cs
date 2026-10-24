@@ -23,6 +23,7 @@ internal sealed class RenderLoop : IDisposable
 
     private Thread? _thread;
     private volatile bool _running;
+    private volatile bool _paused;
     private bool _disposed;
 
     public RenderLoop(
@@ -62,6 +63,11 @@ internal sealed class RenderLoop : IDisposable
     /// <summary>切换到新的帧源。旧源由调用方在确认不再被引用后释放。</summary>
     public void SwitchSource(IFrameSource source) => Volatile.Write(ref _source, source);
 
+    /// <summary>暂停呈现但保留最后画面。采集侧通常也会一并停止以省资源。</summary>
+    public void Pause() => _paused = true;
+
+    public void Resume() => _paused = false;
+
     private void Loop()
     {
         var reportTimer = Stopwatch.StartNew();
@@ -70,6 +76,13 @@ internal sealed class RenderLoop : IDisposable
         {
             try
             {
+                if (_paused)
+                {
+                    // 暂停期间不取帧，窗口保留最后一帧；降低轮询频率避免空转
+                    Thread.Sleep(15);
+                    continue;
+                }
+
                 IFrameSource source = Volatile.Read(ref _source);
                 if (source.TryTakeLatestFrame(out CapturedFrame frame))
                 {
